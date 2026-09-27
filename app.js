@@ -42,6 +42,8 @@ function load() {
   return { version: 1, cycles: [], sessions: [], measurements: [], lastBackup: null };
 }
 let db = load();
+db.logs = db.logs || [];
+db.body = db.body || [];
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
   catch (e) { toast('저장하지 못했어요. 저장 공간을 확인해 주세요.'); }
@@ -268,6 +270,8 @@ function renderHome(view, c) {
 
     ${st.after ? `<button class="btn block" id="finish" style="margin-bottom:8px">Cycle 돌아보기</button>` : ''}
 
+    ${weeklyCheckCard()}
+
     <section class="section">
       <div class="section-head"><h2 class="eyebrow">Goals</h2><span class="aside">카드를 눌러 기록</span></div>
       <div class="stack">${c.goals.map(goalCard).join('') || '<button class="card empty empty-btn" id="add-goal">아직 목표가 없어요<b>+ 목표 추가하기</b></button>'}</div>
@@ -297,6 +301,7 @@ function renderHome(view, c) {
   const f = $('#finish'); if (f) f.onclick = () => go('complete');
   const ag = $('#add-goal'); if (ag) ag.onclick = () => { setupDraft = draftFrom(c); go('setup'); };
   $('#to-plan').onclick = () => { planWeek = null; go('plan'); };
+  const wc = $('#weekly'); if (wc) wc.onclick = () => openBody(c);
 }
 
 function toggleSession(c, date, slot) {
@@ -361,8 +366,7 @@ function renderPlan(view, c) {
     planWeek = hit ? hit.n : W.length;
   }
   const w = W.find(x => x.n === planWeek) || W[0];
-  const runGoal = c.goals.find(g => g.unit === 'km');
-  const row = ([name, dose, tip]) => `<div class="ex"><div><div class="ex-name">${esc(name)}</div>${tip ? `<div class="ex-tip">${esc(tip)}</div>` : ''}</div><div class="ex-dose num">${esc(dose)}</div></div>`;
+  const row = ([name, dose, tip]) => `<div class="ex"><div><a class="ex-name" href="${ytLink(name)}" target="_blank" rel="noopener">${esc(name)}<span aria-hidden="true">↗</span></a>${tip ? `<div class="ex-tip">${esc(tip)}</div>` : ''}</div><div class="ex-dose num">${esc(dose)}</div></div>`;
 
   const dayCard = p => {
     const d = parse(p.date);
@@ -384,13 +388,14 @@ function renderPlan(view, c) {
         <p class="plan-note">${esc(p.speedNote)}</p>
         <div class="sub-head"><span class="label">코어 · 2라운드</span><span class="small muted">동작 사이 20–30초</span></div>
         <div class="ex-list">${p.core.map(row).join('')}</div>
-        ${runGoal ? `<button class="btn ghost block" data-runrec="${runGoal.id}" style="margin-top:12px">30분 거리 기록하기</button>` : ''}
       ` : `
         <div class="sub-head"><span class="label">본 운동</span><span class="small muted">세트 × 횟수 · 준비 세트 제외</span></div>
         <div class="ex-list">${p.list.map(row).join('')}</div>
         <p class="plan-note"><b>무게</b> ${esc(p.load)}</p>
       `}
       ${p.note ? `<p class="plan-note">${esc(p.note)}</p>` : ''}
+      ${logSummary(c, p.date)}
+      <button class="btn ${logFor(c, p.date) ? 'ghost' : ''} block" data-log="${p.date}" style="margin-top:14px">${logFor(c, p.date) ? '기록 수정' : '운동 기록하기'}</button>
     </article>`;
   };
 
@@ -420,7 +425,227 @@ function renderPlan(view, c) {
     planWeek = +b.dataset.pw; render();
   });
   $$('.plan-check', view).forEach(b => b.onclick = () => toggleSession(c, b.dataset.date, +b.dataset.slot));
-  $$('[data-runrec]', view).forEach(b => b.onclick = () => openRecord(c, b.dataset.runrec));
+  $$('[data-log]', view).forEach(b => b.onclick = () => openLog(c, b.dataset.log));
+}
+
+/* ——— workout log ——— */
+const ytLink = name => `https://www.youtube.com/results?search_query=${encodeURIComponent(name + ' 자세')}`;
+function parseDose(dose) {
+  const m = dose.match(/(\d+)\s*×\s*(좌우\s*)?(\d+)/);
+  return { sets: m ? +m[1] : 2, reps: m ? +m[3] : '', side: /좌우/.test(dose), unit: /초/.test(dose) ? '초' : '회' };
+}
+const logFor = (c, date) => db.logs.find(l => l.cycleId === c.id && l.date === date);
+function lastExercise(name, beforeDate) {
+  const logs = db.logs.filter(l => l.date < beforeDate).sort((a, b) => b.date.localeCompare(a.date));
+  for (const l of logs) {
+    const e = l.exercises.find(x => x.name === name && x.sets.some(s => s.r !== '' || s.w !== ''));
+    if (e) return { date: l.date, ...e };
+  }
+  return null;
+}
+const setsText = e => e.sets.filter(s => s.r !== '' || s.w !== '').map(s => `${s.w !== '' ? s.w + 'kg×' : ''}${s.r}${e.unit === '초' ? '초' : ''}`).join(' · ');
+function paceOf(min, km) {
+  if (!(min > 0 && km > 0)) return null;
+  const sec = Math.round((min * 60) / km);
+  return { pace: `${Math.floor(sec / 60)}:${pad(sec % 60)}`, kmh: (km / (min / 60)).toFixed(1) };
+}
+function logSummary(c, date) {
+  const l = logFor(c, date);
+  if (!l) return '';
+  const lines = [];
+  if (l.run) {
+    const pc = paceOf(l.run.min, l.run.km);
+    lines.push(`<div><b>러닝</b> ${l.run.min}분 · ${l.run.km}km${pc ? ` · ${pc.pace}/km · ${pc.kmh}km/h` : ''}</div>`);
+  }
+  l.exercises.forEach(e => { const t = setsText(e); if (t) lines.push(`<div><b>${esc(e.name)}</b> ${esc(t)}${e.pain ? ' · 통증' : ''}</div>`); });
+  return `<div class="log-sum"><span class="label">기록</span>${lines.join('') || '<div>완료</div>'}</div>`;
+}
+
+function openLog(c, date) {
+  const p = PROGRAM.byDate[date];
+  if (!p) return;
+  const prev = logFor(c, date);
+  const items = (p.kind === 'run' ? p.core.map(x => ({ name: x[0], dose: x[1], core: true })) : p.list.map(x => ({ name: x[0], dose: x[1], core: false })));
+  const state = {
+    run: p.kind === 'run' ? { min: prev?.run?.min ?? 30, km: prev?.run?.km ?? '' } : null,
+    exercises: items.map(it => {
+      const saved = prev?.exercises.find(e => e.name === it.name);
+      const d = parseDose(it.dose);
+      const last = lastExercise(it.name, date);
+      const lastW = last ? [...last.sets].reverse().find(s => s.w !== '')?.w ?? '' : '';
+      return {
+        name: it.name, dose: it.dose, core: it.core, unit: d.unit, side: d.side, last,
+        sets: saved ? saved.sets.map(s => ({ ...s })) : Array.from({ length: d.sets }, () => ({ w: it.core ? '' : lastW, r: d.reps })),
+        rir: saved?.rir ?? '', pain: saved?.pain ?? false,
+      };
+    }),
+  };
+  const dd = parse(date);
+  const html = () => `
+    <h2 id="sheet-title">${DOW[dd.getDay()]} ${md(date)} · 운동 기록</h2>
+    ${state.run ? `
+      <div class="log-block">
+        <div class="label">걷기·달리기</div>
+        <div class="two" style="margin-top:8px">
+          <label><span class="small muted">시간 (분)</span><input class="input num log-big" id="run-min" type="number" inputmode="decimal" step="any" value="${state.run.min}"></label>
+          <label><span class="small muted">거리 (km)</span><input class="input num log-big" id="run-km" type="number" inputmode="decimal" step="any" value="${state.run.km}" placeholder="4.00"></label>
+        </div>
+        <div class="pace-out" id="pace-out"></div>
+        <p class="hint" style="margin:6px 0 0">걷기 포함 평균이에요. 30분 기록은 30 Min Run 목표에도 반영돼요.</p>
+      </div>` : ''}
+    ${state.exercises.map((e, i) => `
+      <div class="log-block">
+        <div class="log-ex-head"><span class="ex-name">${esc(e.name)}</span><span class="small muted num">계획 ${esc(e.dose)}</span></div>
+        ${e.last ? `<div class="small muted">지난번 ${md(e.last.date)} · ${esc(setsText(e.last))}</div>` : ''}
+        <div class="set-rows">
+          ${e.sets.map((st, j) => `<div class="set-row ${e.core ? 'core' : ''}">
+            <span class="set-n num">${j + 1}</span>
+            ${e.core ? '' : `<label class="unit-in"><input class="input num" type="number" inputmode="decimal" step="any" data-e="${i}" data-s="${j}" data-f="w" value="${st.w}"><span>kg</span></label>`}
+            <label class="unit-in"><input class="input num" type="number" inputmode="numeric" step="any" data-e="${i}" data-s="${j}" data-f="r" value="${st.r}"><span>${e.side ? '좌우 ' : ''}${e.unit}</span></label>
+            <button class="icon-btn" data-srm="${i}:${j}" aria-label="${j + 1}세트 삭제">×</button>
+          </div>`).join('')}
+        </div>
+        <div class="log-opts">
+          <button class="btn quiet" data-sadd="${i}">+ 세트</button>
+          ${e.core ? '' : `<label class="small muted">여유 <select class="input mini" data-e="${i}" data-f="rir">${['', 0, 1, 2, 3, 4, '5+'].map(v => `<option value="${v}" ${String(e.rir) === String(v) ? 'selected' : ''}>${v === '' ? '—' : v + '회'}</option>`).join('')}</select></label>`}
+          <label class="small muted pain"><input type="checkbox" data-e="${i}" data-f="pain" ${e.pain ? 'checked' : ''}> 통증</label>
+        </div>
+      </div>`).join('')}
+    <div class="row-btns" style="margin-top:16px"><button class="btn ghost" data-close>취소</button><button class="btn" id="log-save">저장</button></div>`;
+
+  const sync = root => {
+    $$('[data-f]', root).forEach(el => {
+      const e = state.exercises[+el.dataset.e], f = el.dataset.f;
+      if (f === 'w' || f === 'r') e.sets[+el.dataset.s][f] = el.value === '' ? '' : parseFloat(el.value);
+      else if (f === 'rir') e.rir = el.value;
+      else if (f === 'pain') e.pain = el.checked;
+    });
+    if (state.run) {
+      state.run.min = parseFloat($('#run-min', root).value) || '';
+      state.run.km = parseFloat($('#run-km', root).value) || '';
+    }
+  };
+  const showPace = root => {
+    const out = $('#pace-out', root);
+    if (!out) return;
+    const pc = paceOf(parseFloat($('#run-min', root).value), parseFloat($('#run-km', root).value));
+    out.innerHTML = pc ? `<span><b class="num">${pc.pace}</b> /km</span><span><b class="num">${pc.kmh}</b> km/h</span>` : '<span class="muted small">시간과 거리를 넣으면 페이스가 계산돼요</span>';
+  };
+  const mount = root => {
+    showPace(root);
+    ['#run-min', '#run-km'].forEach(id => { const el = $(id, root); if (el) el.oninput = () => showPace(root); });
+    $$('[data-sadd]', root).forEach(b => b.onclick = () => {
+      sync(root); const e = state.exercises[+b.dataset.sadd]; const lastSet = e.sets[e.sets.length - 1] || { w: '', r: '' };
+      e.sets.push({ ...lastSet }); root.innerHTML = html(); mount(root);
+    });
+    $$('[data-srm]', root).forEach(b => b.onclick = () => {
+      sync(root); const [i, j] = b.dataset.srm.split(':').map(Number); state.exercises[i].sets.splice(j, 1); root.innerHTML = html(); mount(root);
+    });
+    $('#log-save', root).onclick = () => {
+      sync(root);
+      const log = {
+        id: prev?.id || uid(), cycleId: c.id, date, kind: p.kind, at: Date.now(),
+        run: state.run && (state.run.min || state.run.km) ? { min: state.run.min, km: state.run.km } : null,
+        exercises: state.exercises.map(e => ({ name: e.name, core: e.core, unit: e.unit, sets: e.sets.filter(s => s.r !== '' || s.w !== ''), rir: e.rir, pain: e.pain })),
+      };
+      db.logs = db.logs.filter(l => !(l.cycleId === c.id && l.date === date));
+      db.logs.push(log);
+      // saving a log also completes the Session
+      const slot = slotFor(c, date);
+      if (slot >= 0) {
+        const key = sessionKey(c.id, date, slot);
+        let ss = db.sessions.find(x => x.key === key);
+        if (!ss) { ss = { key, cycleId: c.id, date, slot, label: c.plan[slot].label }; db.sessions.push(ss); }
+        ss.done = true; ss.at = Date.now();
+      }
+      // a 30-minute run feeds the running goal
+      const runGoal = c.goals.find(g => g.type === 'run_30min') || c.goals.find(g => g.unit === 'km');
+      db.measurements = db.measurements.filter(m => m.logId !== log.id);
+      if (runGoal && log.run && Number(log.run.min) === 30 && log.run.km > 0) {
+        db.measurements.push({ id: uid(), cycleId: c.id, goalId: runGoal.id, date, value: log.run.km, note: '운동 기록', logId: log.id, at: Date.now() });
+      }
+      save(); closeSheet(); render();
+      toast('운동 기록을 저장했어요');
+    };
+  };
+  openSheet(html(), mount);
+}
+
+/* ——— weekly body check (Thursday, home scale) ——— */
+const CHECK_DOW = 4;
+function bodyThisWeek() {
+  const mon = mondayOf(today()), sun = addDays(mon, 6);
+  return db.body.find(b => b.date >= mon && b.date <= sun);
+}
+function weeklyCheckCard() {
+  const t = today();
+  // from Thursday until the week ends (Mon-based index)
+  if ((parse(t).getDay() + 6) % 7 < (CHECK_DOW + 6) % 7) return '';
+  if (bodyThisWeek()) return '';
+  return `<section class="section"><button class="card weekly" id="weekly">
+    <span><span class="label">Weekly check · 목요일</span><span class="weekly-t">이번 주 몸무게·체지방률</span><span class="small muted">집 체중계 · 같은 조건으로</span></span>
+    <span class="weekly-go">기록</span></button></section>`;
+}
+function openBody(c) {
+  const last = db.body.slice().sort((a, b) => a.date.localeCompare(b.date)).pop();
+  const html = `
+    <h2 id="sheet-title">Weekly check</h2>
+    <div class="two">
+      <label class="field"><span class="label">Weight (kg)</span><input class="input big" id="bw" type="number" inputmode="decimal" step="any" placeholder="${last?.weight ?? ''}"></label>
+      <label class="field"><span class="label">Body fat (%)</span><input class="input big" id="bf" type="number" inputmode="decimal" step="any" placeholder="${last?.bodyFat ?? ''}"></label>
+    </div>
+    <label class="field"><span class="label">Date</span><input class="input" id="bd" type="date" value="${today()}"></label>
+    <p class="hint" style="margin-top:0">매주 같은 조건(예: 목요일 아침 기상 후, 화장실 다녀온 뒤)에서 재면 추이를 보기 좋아요. 체지방률은 Body Fat 목표에도 반영돼요.</p>
+    <div class="row-btns"><button class="btn ghost" data-close>취소</button><button class="btn" id="b-save">저장</button></div>`;
+  openSheet(html, root => {
+    setTimeout(() => $('#bw', root).focus(), 250);
+    $('#b-save', root).onclick = () => {
+      const w = parseFloat($('#bw', root).value), f = parseFloat($('#bf', root).value), date = $('#bd', root).value || today();
+      if (!Number.isFinite(w) && !Number.isFinite(f)) { toast('몸무게나 체지방률을 입력해 주세요'); return; }
+      const e = { id: uid(), date, weight: Number.isFinite(w) ? w : null, bodyFat: Number.isFinite(f) ? f : null, at: Date.now() };
+      db.body.push(e);
+      const g = c.goals.find(x => x.type === 'body_fat') || c.goals.find(x => x.unit === '%');
+      if (g && e.bodyFat != null) db.measurements.push({ id: uid(), cycleId: c.id, goalId: g.id, date, value: e.bodyFat, note: 'Weekly check', bodyId: e.id, at: Date.now() });
+      save(); closeSheet(); render();
+      toast('이번 주 체크를 저장했어요');
+    };
+  });
+}
+function miniChart(pts, unit) {
+  if (pts.length < 2) return '';
+  const W = 320, H = 110, px = 34, py = 12;
+  const vs = pts.map(p => p.v); let lo = Math.min(...vs), hi = Math.max(...vs);
+  const pd = (hi - lo) * 0.2 || 0.5; lo -= pd; hi += pd;
+  const X = i => px + (i / (pts.length - 1)) * (W - px - 8);
+  const Y = v => py + (1 - (v - lo) / (hi - lo)) * (H - py * 2);
+  return `<svg viewBox="0 0 ${W} ${H + 12}" role="img" aria-label="${unit} 추이">
+    <line class="c-grid" x1="${px}" x2="${W - 8}" y1="${H - py}" y2="${H - py}"/>
+    <text x="0" y="${Y(Math.max(...vs)) + 4}">${Math.max(...vs)}</text><text x="0" y="${Y(Math.min(...vs)) + 4}">${Math.min(...vs)}</text>
+    <path class="c-line" d="${pts.map((p, i) => `${i ? 'L' : 'M'} ${X(i).toFixed(1)} ${Y(p.v).toFixed(1)}`).join(' ')}"/>
+    ${pts.map((p, i) => `<circle class="c-pt" cx="${X(i)}" cy="${Y(p.v)}" r="3"/>`).join('')}
+    <text x="${px}" y="${H + 10}">${md(pts[0].d)}</text><text x="${W - 8}" y="${H + 10}" text-anchor="end">${md(pts[pts.length - 1].d)}</text>
+  </svg>`;
+}
+function bodySection(c) {
+  const list = db.body.slice().sort((a, b) => a.date.localeCompare(b.date));
+  const wPts = list.filter(b => b.weight != null).map(b => ({ d: b.date, v: b.weight }));
+  return `<section class="section">
+    <div class="section-head"><h2 class="eyebrow">Weekly check</h2><button class="btn quiet" id="body-add">+ 기록</button></div>
+    <div class="card chart">
+      ${wPts.length > 1 ? `<div class="small muted" style="margin-bottom:4px">몸무게 (kg)</div>${miniChart(wPts, 'kg')}` : ''}
+      <div class="entries" ${wPts.length > 1 ? '' : 'style="margin-top:0;border-top:0"'}>${list.length ? list.slice().reverse().map(b => `<div class="entry"><span>${md(b.date)}</span><span><span class="num">${b.weight ?? '—'}</span> <span class="muted small">kg</span> &nbsp;<span class="num">${b.bodyFat ?? '—'}</span> <span class="muted small">%</span><button class="icon-btn" data-bdel="${b.id}" aria-label="${md(b.date)} 체크 삭제">×</button></span></div>`).join('') : '<div class="empty">매주 목요일, 집 체중계로 몸무게와 체지방률을 남겨요.</div>'}</div>
+    </div>
+  </section>`;
+}
+function runsSection(c) {
+  const runs = db.logs.filter(l => l.cycleId === c.id && l.run).sort((a, b) => b.date.localeCompare(a.date));
+  if (!runs.length) return '';
+  return `<section class="section">
+    <div class="section-head"><h2 class="eyebrow">Runs</h2><span class="aside">평균 페이스 · 걷기 포함</span></div>
+    <div class="card" style="padding:4px 18px">
+      ${runs.map(l => { const pc = paceOf(l.run.min, l.run.km); return `<button class="entry run-entry" data-log="${l.date}"><span>${md(l.date)}</span><span class="num">${l.run.min}분 · ${l.run.km}km</span><span class="num"><b>${pc ? pc.pace : '—'}</b><span class="muted small"> /km</span></span></button>`; }).join('')}
+    </div>
+  </section>`;
 }
 
 /* ——— progress ——— */
@@ -489,9 +714,20 @@ function renderProgress(view, c) {
         </div>
       </section>`;
     }).join('')}
+    ${bodySection(c)}
+    ${runsSection(c)}
     <div class="footer-tag">Progress at your pace.</div>`;
 
   $$('[data-rec]', view).forEach(b => b.onclick = () => openRecord(c, b.dataset.rec));
+  const bb = $('#body-add'); if (bb) bb.onclick = () => openBody(c);
+  $$('[data-bdel]', view).forEach(b => b.onclick = () => {
+    const e = db.body.find(x => x.id === b.dataset.bdel);
+    if (!e || !confirm(`${md(e.date)} 체크를 삭제할까요?`)) return;
+    db.body = db.body.filter(x => x.id !== e.id);
+    db.measurements = db.measurements.filter(m => m.bodyId !== e.id);
+    save(); render(); toast('체크를 삭제했어요');
+  });
+  $$('[data-log]', view).forEach(b => b.onclick = () => openLog(c, b.dataset.log));
   $$('[data-del]', view).forEach(b => b.onclick = () => {
     const m = db.measurements.find(x => x.id === b.dataset.del);
     if (!m || !confirm(`${md(m.date)} 기록(${m.value})을 삭제할까요?`)) return;
@@ -715,7 +951,7 @@ function importBackup() {
       const data = JSON.parse(await f.text());
       if (!Array.isArray(data.cycles) || !Array.isArray(data.measurements)) throw new Error('format');
       if (db.cycles.length && !confirm('지금 기기의 기록을 백업 파일 내용으로 바꿀까요?')) return;
-      db = { version: 1, sessions: [], lastBackup: null, ...data };
+      db = { version: 1, sessions: [], logs: [], body: [], lastBackup: null, ...data };
       save(); go('home'); toast('백업을 불러왔어요');
     } catch (e) { toast('PACE 백업 파일이 아니에요'); }
   };
