@@ -140,6 +140,7 @@ function render() {
   if (!c) return renderWelcome(view);
   if (route === 'progress') return renderProgress(view, c);
   if (route === 'cycle') return renderCycle(view, c);
+  if (route === 'plan') return renderPlan(view, c);
   return renderHome(view, c);
 }
 
@@ -240,8 +241,15 @@ function renderHome(view, c) {
   const st = cycleStats(c);
   const t = today();
   const anchor = st.before ? c.start : st.after ? c.end : t;
-  const ws = mondayOf(anchor), we = addDays(ws, 6);
-  const week = plannedSessions(c).filter(s => s.date >= ws && s.date <= we);
+  let ws = mondayOf(anchor), we = addDays(ws, 6);
+  let week = plannedSessions(c).filter(s => s.date >= ws && s.date <= we);
+  // nothing left to show this week (e.g. Sunday) → look at next week
+  let nextWeek = false;
+  if (!st.after && !week.some(s => s.date >= t)) {
+    const ws2 = addDays(ws, 7), we2 = addDays(ws2, 6);
+    const w2 = plannedSessions(c).filter(s => s.date >= ws2 && s.date <= we2);
+    if (w2.length && !week.length) { ws = ws2; we = we2; week = w2; nextWeek = true; }
+  }
   const doneCount = week.filter(s => isDone(c, s.date, s.slot)).length;
 
   view.innerHTML = `
@@ -262,22 +270,23 @@ function renderHome(view, c) {
 
     <section class="section">
       <div class="section-head"><h2 class="eyebrow">Goals</h2><span class="aside">카드를 눌러 기록</span></div>
-      <div class="stack">${c.goals.map(goalCard).join('') || '<div class="card empty">Cycle 탭에서 목표를 추가해 주세요.</div>'}</div>
+      <div class="stack">${c.goals.map(goalCard).join('') || '<button class="card empty empty-btn" id="add-goal">아직 목표가 없어요<b>+ 목표 추가하기</b></button>'}</div>
     </section>
 
     <section class="section">
-      <div class="section-head"><h2 class="eyebrow">${st.before ? 'First week' : 'This week'}</h2><span class="aside">${week.length ? `${doneCount} / ${week.length} sessions` : ''}</span></div>
+      <div class="section-head"><h2 class="eyebrow">${st.before ? 'First week' : nextWeek ? 'Next week' : 'This week'}</h2><span class="aside">${week.length ? `${doneCount} / ${week.length} sessions` : ''}</span></div>
       <div class="card sessions">
         ${week.map(s => {
           const done = isDone(c, s.date, s.slot);
           const d = parse(s.date);
           return `<button class="session ${done ? 'done' : ''} ${s.date === t ? 'today' : ''}" data-date="${s.date}" data-slot="${s.slot}" aria-pressed="${done}">
             <span class="day">${DOW[d.getDay()]}<em>${md(s.date)}</em></span>
-            <span class="what">${esc(s.label)}${s.date === t ? '<small>오늘</small>' : ''}</span>
+            <span class="what">${esc(s.label)}${s.date === t || planSummary(s.date) ? `<small>${[s.date === t ? '오늘' : '', planSummary(s.date)].filter(Boolean).join(' · ')}</small>` : ''}</span>
             <span class="check">${CHECK}</span>
           </button>`;
         }).join('') || '<div class="empty">이번 주에는 계획된 Session이 없어요.</div>'}
       </div>
+      <button class="btn quiet" id="to-plan" style="margin-top:6px">${week.some(s => PROGRAM.byDate[s.date]) ? '운동 내용 보기 ›' : 'Plan 보기 ›'}</button>
     </section>
 
     <div class="footer-tag">Your goal. Your pace.</div>`;
@@ -286,6 +295,8 @@ function renderHome(view, c) {
   $$('.session', view).forEach(b => b.onclick = () => toggleSession(c, b.dataset.date, +b.dataset.slot));
   $$('.goal-add', view).forEach(b => b.onclick = () => openRecord(c, b.dataset.goal));
   const f = $('#finish'); if (f) f.onclick = () => go('complete');
+  const ag = $('#add-goal'); if (ag) ag.onclick = () => { setupDraft = draftFrom(c); go('setup'); };
+  $('#to-plan').onclick = () => { planWeek = null; go('plan'); };
 }
 
 function toggleSession(c, date, slot) {
@@ -325,6 +336,91 @@ function openRecord(c, goalId) {
     setTimeout(() => $('#rv', root)?.focus(), 250);
   };
   openSheet(html(), mount);
+}
+
+/* ——— plan ——— */
+function planSummary(date) {
+  const p = PROGRAM.byDate[date];
+  if (!p) return '';
+  if (p.kind === 'run') return `400m × ${p.speeds.length} · ${Math.min(...p.speeds)}–${Math.max(...p.speeds)} km/h`;
+  return `${p.list[0][0]} 외 ${p.list.length - 1}`;
+}
+// which slot of the active cycle's weekly plan this date belongs to
+function slotFor(c, date) {
+  if (!c || date < c.start || date > c.end) return -1;
+  const dow = parse(date).getDay();
+  return c.plan.findIndex(p => p.dow === dow);
+}
+
+let planWeek = null;
+function renderPlan(view, c) {
+  const t = today();
+  const W = PROGRAM.weeks;
+  if (planWeek == null) {
+    const hit = W.find(w => t <= w.days[w.days.length - 1].date);
+    planWeek = hit ? hit.n : W.length;
+  }
+  const w = W.find(x => x.n === planWeek) || W[0];
+  const runGoal = c.goals.find(g => g.unit === 'km');
+  const row = ([name, dose, tip]) => `<div class="ex"><div><div class="ex-name">${esc(name)}</div>${tip ? `<div class="ex-tip">${esc(tip)}</div>` : ''}</div><div class="ex-dose num">${esc(dose)}</div></div>`;
+
+  const dayCard = p => {
+    const d = parse(p.date);
+    const slot = slotFor(c, p.date);
+    const done = slot >= 0 && isDone(c, p.date, slot);
+    const label = slot >= 0 ? c.plan[slot].label : (p.kind === 'run' ? 'Run + Core' : 'Strength + Walk');
+    const lo = 8, hi = 10.4;
+    return `<article class="card day-card ${p.date === t ? 'is-today' : ''}">
+      <div class="day-head">
+        <div><div class="label">${DOW[d.getDay()]} ${md(p.date)}${p.date === t ? ' · 오늘' : ''}</div><h3>${esc(label)}</h3></div>
+        ${slot >= 0 ? `<button class="session plan-check ${done ? 'done' : ''}" data-date="${p.date}" data-slot="${slot}" aria-pressed="${done}" aria-label="${md(p.date)} Session 완료"><span class="check">${CHECK}</span></button>` : ''}
+      </div>
+      <div class="timeline">${p.time.map(([a, b]) => `<div><span class="num">${a}</span>${esc(b)}</div>`).join('')}</div>
+      ${p.kind === 'run' ? `
+        <div class="sub-head"><span class="label">400m 달리기 속도</span><span class="small muted">사이 100m 걷기 6km/h</span></div>
+        <div class="speeds" role="img" aria-label="속도 ${p.speeds.join(', ')} km/h">
+          ${p.speeds.map(v => `<div class="sp"><i style="height:${Math.round(((v - lo) / (hi - lo)) * 100)}%"></i><span class="num">${v}</span></div>`).join('')}
+        </div>
+        <p class="plan-note">${esc(p.speedNote)}</p>
+        <div class="sub-head"><span class="label">코어 · 2라운드</span><span class="small muted">동작 사이 20–30초</span></div>
+        <div class="ex-list">${p.core.map(row).join('')}</div>
+        ${runGoal ? `<button class="btn ghost block" data-runrec="${runGoal.id}" style="margin-top:12px">30분 거리 기록하기</button>` : ''}
+      ` : `
+        <div class="sub-head"><span class="label">본 운동</span><span class="small muted">세트 × 횟수 · 준비 세트 제외</span></div>
+        <div class="ex-list">${p.list.map(row).join('')}</div>
+        <p class="plan-note"><b>무게</b> ${esc(p.load)}</p>
+      `}
+      ${p.note ? `<p class="plan-note">${esc(p.note)}</p>` : ''}
+    </article>`;
+  };
+
+  view.innerHTML = `
+    <header class="topbar"><div class="wordmark">${MARK}PACE</div><span class="pill">${esc(c.name)}</span></header>
+    <h1 class="num" style="font-size:34px;letter-spacing:.02em">Plan</h1>
+    <p class="small muted" style="margin:2px 0 16px">${PROGRAM.name} · ${short(PROGRAM.start)} — ${short(PROGRAM.end)} · 화·수·목 약 50분</p>
+
+    <div class="week-tabs" role="tablist">
+      ${W.map(x => `<button class="chip" role="tab" data-pw="${x.n}" aria-pressed="${x.n === w.n}">W${x.n} <span class="muted">${x.set}</span></button>`).join('')}
+      <button class="chip" data-pw="later" aria-pressed="false">W5+</button>
+    </div>
+    <div class="week-title"><span class="label">Week ${w.n} · ${w.set} 구성</span><span>${esc(w.title)}</span></div>
+
+    <div class="stack">${w.days.map(dayCard).join('')}</div>
+
+    <section class="section">
+      <div class="section-head"><h2 class="eyebrow">Guide</h2></div>
+      <div class="card guides">
+        ${PROGRAM.guides.map(([title, items]) => `<details><summary>${esc(title)}</summary><ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></details>`).join('')}
+      </div>
+    </section>
+    <div class="footer-tag">One cycle at a time.</div>`;
+
+  $$('[data-pw]', view).forEach(b => b.onclick = () => {
+    if (b.dataset.pw === 'later') return toast('5주차부터는 첫 4주 기록을 보고 함께 정해요');
+    planWeek = +b.dataset.pw; render();
+  });
+  $$('.plan-check', view).forEach(b => b.onclick = () => toggleSession(c, b.dataset.date, +b.dataset.slot));
+  $$('[data-runrec]', view).forEach(b => b.onclick = () => openRecord(c, b.dataset.runrec));
 }
 
 /* ——— progress ——— */
