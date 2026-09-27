@@ -1,0 +1,634 @@
+/* PACE — Your goal. Your pace.
+ * Hierarchy: Cycle → Goal / Plan → Session → Progress.
+ * All data lives in this device's localStorage (key below). */
+'use strict';
+
+const STORE_KEY = 'pace.v1';
+const DOW = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+const DOW_KO = ['일', '월', '화', '수', '목', '금', '토'];
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const GOAL_PRESETS = [
+  { type: 'body_fat', label: 'Body Fat', unit: '%', step: 0.1 },
+  { type: 'run_30min', label: '30 Min Run', unit: 'km', step: 0.01 },
+  { type: 'weight', label: 'Weight', unit: 'kg', step: 0.1 },
+  { type: 'custom', label: '', unit: '', step: 0.1 },
+];
+const DEFAULT_PLAN = [
+  { dow: 2, label: 'Strength + Walk' },
+  { dow: 3, label: 'Run + Core' },
+  { dow: 4, label: 'Strength + Walk' },
+];
+
+/* ——— dates (local, yyyy-mm-dd) ——— */
+const pad = n => String(n).padStart(2, '0');
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return iso(d); };
+const diffDays = (a, b) => Math.round((parse(b) - parse(a)) / 864e5);
+const today = () => iso(new Date());
+const mondayOf = s => { const d = parse(s); return addDays(s, -((d.getDay() + 6) % 7)); };
+const short = s => { const d = parse(s); return `${MON[d.getMonth()]} ${d.getDate()}`; };
+const md = s => { const d = parse(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
+const addMonths = (s, n) => { const d = parse(s); d.setMonth(d.getMonth() + n); d.setDate(d.getDate() - 1); return iso(d); };
+
+/* ——— store ——— */
+const uid = () => Math.random().toString(36).slice(2, 10);
+function load() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* storage unavailable */ }
+  return { version: 1, cycles: [], sessions: [], measurements: [], lastBackup: null };
+}
+let db = load();
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
+  catch (e) { toast('저장하지 못했어요. 저장 공간을 확인해 주세요.'); }
+}
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
+const activeCycle = () => db.cycles.find(c => c.status === 'active') || null;
+const cycleById = id => db.cycles.find(c => c.id === id);
+
+/* ——— domain ——— */
+function plannedSessions(c) {
+  const out = [];
+  const n = diffDays(c.start, c.end);
+  for (let i = 0; i <= n; i++) {
+    const date = addDays(c.start, i);
+    const dow = parse(date).getDay();
+    c.plan.forEach((p, slot) => { if (p.dow === dow) out.push({ date, slot, label: p.label }); });
+  }
+  return out;
+}
+const sessionKey = (cycleId, date, slot) => `${cycleId}|${date}|${slot}`;
+function isDone(c, date, slot) {
+  return db.sessions.some(s => s.key === sessionKey(c.id, date, slot) && s.done);
+}
+function measurementsFor(goalId) {
+  return db.measurements.filter(m => m.goalId === goalId).sort((a, b) => a.date.localeCompare(b.date) || a.at - b.at);
+}
+function currentValue(goal) {
+  const ms = measurementsFor(goal.id);
+  return ms.length ? ms[ms.length - 1].value : null;
+}
+function goalProgress(goal, value) {
+  if (value == null || goal.target === goal.start) return 0;
+  const p = (value - goal.start) / (goal.target - goal.start);
+  return Math.max(0, Math.min(1, p));
+}
+function cycleStats(c) {
+  const t = today();
+  const total = diffDays(c.start, c.end) + 1;
+  const elapsed = Math.max(0, Math.min(total, diffDays(c.start, t) + 1));
+  const weeks = Math.ceil(total / 7);
+  const week = t < c.start ? 0 : Math.min(weeks, Math.floor(diffDays(c.start, t) / 7) + 1);
+  return { total, elapsed, weeks, week, frac: t < c.start ? 0 : elapsed / total, before: t < c.start, after: t > c.end };
+}
+const fmtVal = (v, g) => v == null ? '—' : (g && g.unit === 'km' ? v.toFixed(2).replace(/0$/, '') : v.toFixed(1));
+function fmtDelta(d, g) {
+  if (d == null) return '';
+  const s = Math.abs(d) < 1e-9 ? '±0' : (d > 0 ? '+' : '−') + fmtVal(Math.abs(d), g);
+  return `${s}${g.unit === '%' ? '%p' : ' ' + g.unit}`;
+}
+
+/* ——— helpers ——— */
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let toastTimer;
+function toast(msg) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+const CHECK = '<svg viewBox="0 0 16 16"><path d="M3 8.5 L6.5 12 L13 4.5"/></svg>';
+const MARK = '<svg viewBox="0 0 26 16" aria-hidden="true"><rect x="1.2" y="1.2" width="23.6" height="13.6" rx="6.8"/><circle cx="19" cy="4.2" r="2.6"/></svg>';
+
+/* ——— sheet ——— */
+function openSheet(html, onMount) {
+  $('#sheet-body').innerHTML = html;
+  $('#sheet').hidden = false;
+  document.body.style.overflow = 'hidden';
+  onMount && onMount($('#sheet-body'));
+}
+function closeSheet() {
+  $('#sheet').hidden = true;
+  document.body.style.overflow = '';
+}
+$('#sheet').addEventListener('click', e => { if (e.target.closest('[data-close]')) closeSheet(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#sheet').hidden) closeSheet(); });
+
+/* ——— router ——— */
+let route = 'home';
+function go(r) { route = r; render(); window.scrollTo(0, 0); }
+$$('.tab').forEach(b => b.addEventListener('click', () => go(b.dataset.route)));
+
+function render() {
+  const c = activeCycle();
+  const view = $('#view');
+  const showTabs = !!c && !['setup', 'complete'].includes(route);
+  $('#tabbar').hidden = !showTabs;
+  view.classList.toggle('no-tabs', !showTabs);
+  $$('.tab').forEach(b => b.setAttribute('aria-current', b.dataset.route === route ? 'page' : 'false'));
+
+  if (route === 'complete') return renderComplete(view);
+  if (route === 'setup') return renderSetup(view);
+  if (!c) return renderWelcome(view);
+  if (route === 'progress') return renderProgress(view, c);
+  if (route === 'cycle') return renderCycle(view, c);
+  return renderHome(view, c);
+}
+
+/* ——— welcome ——— */
+function renderWelcome(view) {
+  const last = db.cycles[db.cycles.length - 1];
+  view.innerHTML = `
+    <section class="welcome">
+      <svg class="mark" viewBox="0 0 120 70" aria-hidden="true">
+        <rect x="4" y="4" width="112" height="62" rx="31" fill="none" stroke="var(--rail)" stroke-width="8"/>
+        <path d="M35 4 H85 A31 31 0 0 1 85 66" fill="none" stroke="var(--lane)" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="85" cy="66" r="7" fill="var(--sun)"/>
+      </svg>
+      <h1>PACE</h1>
+      <div class="tag">Your goal. Your pace.</div>
+      <p>${last ? '다음 Cycle을 시작할 준비가 되면 기간과 목표를 정해 주세요.' : '기간을 정하고, 그 기간 동안 이루고 싶은 목표를 적는 것부터 시작해요.'}</p>
+      <button class="btn block" id="start">${last ? `Create ${nextCycleName()}` : 'Create a Cycle'}</button>
+      <button class="btn quiet block" id="restore" style="margin-top:8px">백업 파일에서 불러오기</button>
+    </section>`;
+  $('#start').onclick = () => { setupDraft = null; go('setup'); };
+  $('#restore').onclick = importBackup;
+}
+const nextCycleName = () => `Cycle ${pad(db.cycles.length + 1)}`;
+
+/* ——— home ——— */
+function trackSVG(c, st) {
+  // stadium-shaped track; progress runs clockwise from the start line
+  const W = 340, H = 200, sw = 14, r = (H - sw) / 2, x0 = sw / 2 + r, x1 = W - sw / 2 - r, top = sw / 2, bot = H - sw / 2;
+  const mid = (x0 + x1) / 2;
+  const d = `M ${mid} ${top} H ${x1} A ${r} ${r} 0 0 1 ${x1} ${bot} H ${x0} A ${r} ${r} 0 0 1 ${x0} ${top} Z`;
+  const inset = 9, ri = r - inset;
+  const di = `M ${mid} ${top + inset} H ${x1} A ${ri} ${ri} 0 0 1 ${x1} ${bot - inset} H ${x0} A ${ri} ${ri} 0 0 1 ${x0} ${top + inset} Z`;
+  const L = 1000, prog = Math.max(0, Math.min(1, st.frac)) * L;
+  return `
+    <svg viewBox="-8 -8 ${W + 16} ${H + 16}" role="img" aria-label="Cycle 진행 ${Math.round(st.frac * 100)}%">
+      <path class="t-base" d="${d}"/>
+      <path class="t-inner" d="${di}"/>
+      <path class="t-prog" id="tprog" d="${d}" pathLength="${L}" stroke-dasharray="0 ${L}" data-to="${prog}"/>
+      <g id="tticks"></g>
+      <line class="t-start" x1="${mid}" y1="${top - 10}" x2="${mid}" y2="${top + 10}"/>
+      <g id="tnow"></g>
+    </svg>`;
+}
+function mountTrack(c, st) {
+  const p = $('#tprog');
+  if (!p) return;
+  const L = 1000, real = p.getTotalLength(), to = +p.dataset.to;
+  const pt = f => p.getPointAtLength(f * real);
+  // one tick per week boundary
+  let ticks = '';
+  for (let w = 1; w < st.weeks; w++) {
+    const f = (w * 7) / st.total;
+    const q = pt(f);
+    ticks += `<circle class="t-tick ${f <= st.frac ? 'passed' : ''}" cx="${q.x}" cy="${q.y}" r="2.2"/>`;
+  }
+  $('#tticks').innerHTML = ticks;
+  const q = pt(Math.max(0, Math.min(1, st.frac)));
+  $('#tnow').innerHTML = `<circle class="t-now-halo" cx="${q.x}" cy="${q.y}" r="13"/><circle class="t-now" cx="${q.x}" cy="${q.y}" r="8"/>`;
+  requestAnimationFrame(() => requestAnimationFrame(() => p.setAttribute('stroke-dasharray', `${to} ${L}`)));
+}
+
+function heroCenter(c, st) {
+  if (st.before) {
+    const dd = diffDays(today(), c.start);
+    return `<div class="big">D-${dd}</div><div class="sub">${DOW_KO[parse(c.start).getDay()]}요일 ${md(c.start)} 시작</div>`;
+  }
+  if (st.after) return `<div class="big">DONE</div><div class="sub">${st.total}일 완주</div>`;
+  return `<div class="big">WEEK ${st.week}<small>/${st.weeks}</small></div><div class="sub">${Math.round(st.frac * 100)}% · ${st.total - st.elapsed}일 남음</div>`;
+}
+
+function goalCard(g) {
+  const cur = currentValue(g);
+  const shown = cur ?? g.start;
+  const p = goalProgress(g, cur);
+  const moved = cur == null ? null : cur - g.start;
+  return `
+    <article class="card goal">
+      <div class="goal-top">
+        <div>
+          <div class="label">${esc(g.label)}</div>
+          <div class="goal-range num">${fmtVal(g.start, g)} → <b>${fmtVal(g.target, g)}</b><span class="unit">${esc(g.unit)}</span></div>
+        </div>
+        <div class="goal-now">
+          <div class="v num">${fmtVal(shown, g)}<span class="unit">${esc(g.unit)}</span></div>
+          <div class="d">${cur == null ? '아직 기록 없음' : `시작 대비 ${fmtDelta(moved, g)}`}</div>
+        </div>
+      </div>
+      <div class="lane" aria-hidden="true">
+        <div class="rail"></div><div class="fill" style="width:${p * 100}%"></div>
+        <div class="end"></div><div class="dot" style="left:${p * 100}%"></div>
+      </div>
+      <div class="lane-legend"><span>Start ${fmtVal(g.start, g)}${g.startEstimated ? ' (추정)' : ''}</span><span>${Math.round(p * 100)}%</span><span>Goal ${fmtVal(g.target, g)}</span></div>
+      <button class="goal-add" data-goal="${g.id}" aria-label="${esc(g.label)} 기록하기"></button>
+    </article>`;
+}
+
+function renderHome(view, c) {
+  const st = cycleStats(c);
+  const t = today();
+  const anchor = st.before ? c.start : st.after ? c.end : t;
+  const ws = mondayOf(anchor), we = addDays(ws, 6);
+  const week = plannedSessions(c).filter(s => s.date >= ws && s.date <= we);
+  const doneCount = week.filter(s => isDone(c, s.date, s.slot)).length;
+
+  view.innerHTML = `
+    <header class="topbar">
+      <div class="wordmark">${MARK}PACE</div>
+      <span class="pill">${short(t)}</span>
+    </header>
+
+    <section class="hero">
+      <div class="hero-head">
+        <h1>${esc(c.name)}</h1>
+        <div class="dates">${short(c.start)} — ${short(c.end)}<br>${st.total}일 · ${st.weeks}주</div>
+      </div>
+      <div class="track">${trackSVG(c, st)}<div class="track-center">${heroCenter(c, st)}</div></div>
+    </section>
+
+    ${st.after ? `<button class="btn block" id="finish" style="margin-bottom:8px">Cycle 돌아보기</button>` : ''}
+
+    <section class="section">
+      <div class="section-head"><h2 class="eyebrow">Goals</h2><span class="aside">카드를 눌러 기록</span></div>
+      <div class="stack">${c.goals.map(goalCard).join('') || '<div class="card empty">Cycle 탭에서 목표를 추가해 주세요.</div>'}</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2 class="eyebrow">${st.before ? 'First week' : 'This week'}</h2><span class="aside">${week.length ? `${doneCount} / ${week.length} sessions` : ''}</span></div>
+      <div class="card sessions">
+        ${week.map(s => {
+          const done = isDone(c, s.date, s.slot);
+          const d = parse(s.date);
+          return `<button class="session ${done ? 'done' : ''} ${s.date === t ? 'today' : ''}" data-date="${s.date}" data-slot="${s.slot}" aria-pressed="${done}">
+            <span class="day">${DOW[d.getDay()]}<em>${md(s.date)}</em></span>
+            <span class="what">${esc(s.label)}${s.date === t ? '<small>오늘</small>' : ''}</span>
+            <span class="check">${CHECK}</span>
+          </button>`;
+        }).join('') || '<div class="empty">이번 주에는 계획된 Session이 없어요.</div>'}
+      </div>
+    </section>
+
+    <div class="footer-tag">Your goal. Your pace.</div>`;
+
+  mountTrack(c, st);
+  $$('.session', view).forEach(b => b.onclick = () => toggleSession(c, b.dataset.date, +b.dataset.slot));
+  $$('.goal-add', view).forEach(b => b.onclick = () => openRecord(c, b.dataset.goal));
+  const f = $('#finish'); if (f) f.onclick = () => go('complete');
+}
+
+function toggleSession(c, date, slot) {
+  const key = sessionKey(c.id, date, slot);
+  let s = db.sessions.find(x => x.key === key);
+  if (!s) { s = { key, cycleId: c.id, date, slot, label: c.plan[slot]?.label, done: false }; db.sessions.push(s); }
+  s.done = !s.done;
+  s.at = Date.now();
+  save();
+  render();
+  if (s.done) toast(date > today() ? `${md(date)} Session 완료로 표시했어요` : 'Session 완료 ✓');
+}
+
+/* ——— record a measurement ——— */
+function openRecord(c, goalId) {
+  const goals = c.goals;
+  let sel = goals.find(g => g.id === goalId) || goals[0];
+  if (!sel) return;
+  const html = () => `
+    <h2 id="sheet-title">기록하기</h2>
+    <div class="chips" style="margin-bottom:16px">${goals.map(g => `<button class="chip" data-g="${g.id}" aria-pressed="${g.id === sel.id}">${esc(g.label)}</button>`).join('')}</div>
+    <label class="field"><span class="label">${esc(sel.label)} (${esc(sel.unit)})</span>
+      <input class="input big" id="rv" type="number" inputmode="decimal" step="${sel.step || 0.1}" placeholder="${fmtVal(currentValue(sel) ?? sel.start, sel)}"></label>
+    <label class="field"><span class="label">Date</span><input class="input" id="rd" type="date" value="${today()}"></label>
+    <label class="field"><span class="label">Memo</span><input class="input" id="rn" type="text" placeholder="선택 — 측정 조건 등"></label>
+    <div class="row-btns"><button class="btn ghost" data-close>취소</button><button class="btn" id="rsave">저장</button></div>`;
+  const mount = root => {
+    $$('.chip', root).forEach(b => b.onclick = () => { sel = goals.find(g => g.id === b.dataset.g); root.innerHTML = html(); mount(root); });
+    $('#rsave', root).onclick = () => {
+      const v = parseFloat($('#rv', root).value);
+      const date = $('#rd', root).value || today();
+      if (!Number.isFinite(v)) { toast('숫자를 입력해 주세요'); $('#rv', root).focus(); return; }
+      db.measurements.push({ id: uid(), cycleId: c.id, goalId: sel.id, date, value: v, note: $('#rn', root).value.trim(), at: Date.now() });
+      save(); closeSheet(); render();
+      toast(`${sel.label} ${fmtVal(v, sel)}${sel.unit} 저장했어요`);
+    };
+    setTimeout(() => $('#rv', root)?.focus(), 250);
+  };
+  openSheet(html(), mount);
+}
+
+/* ——— progress ——— */
+function chartSVG(c, g) {
+  const ms = measurementsFor(g.id);
+  const W = 320, H = 150, px = 30, py = 16;
+  const span = Math.max(1, diffDays(c.start, c.end));
+  const vals = [g.start, g.target, ...ms.map(m => m.value)];
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad2 = (hi - lo) * 0.15 || 1; lo -= pad2; hi += pad2;
+  const X = date => px + (Math.max(0, Math.min(span, diffDays(c.start, date))) / span) * (W - px - 6);
+  const Y = v => py + (1 - (v - lo) / (hi - lo)) * (H - py * 2);
+  const pts = [{ date: c.start, value: g.start, first: true }, ...ms];
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'} ${X(p.date).toFixed(1)} ${Y(p.value).toFixed(1)}`).join(' ');
+  const t = today();
+  return `<svg viewBox="0 0 ${W} ${H + 14}" role="img" aria-label="${esc(g.label)} 변화">
+    <line class="c-grid" x1="${px}" x2="${W - 6}" y1="${H - py}" y2="${H - py}"/>
+    <line class="c-target" x1="${px}" x2="${W - 6}" y1="${Y(g.target)}" y2="${Y(g.target)}"/>
+    <text x="0" y="${Y(g.target) + 4}">${fmtVal(g.target, g)}</text>
+    <text x="0" y="${Y(g.start) + 4}">${fmtVal(g.start, g)}</text>
+    ${t >= c.start && t <= c.end ? `<line class="c-today" x1="${X(t)}" x2="${X(t)}" y1="${py - 6}" y2="${H - py}"/>` : ''}
+    <path class="c-line" d="${line}"/>
+    ${pts.map(p => `<circle class="c-pt ${p.first ? 'first' : ''}" cx="${X(p.date)}" cy="${Y(p.value)}" r="${p.first ? 3.5 : 3.2}"/>`).join('')}
+    <text x="${px}" y="${H + 10}">${short(c.start).toUpperCase()}</text>
+    <text x="${W - 6}" y="${H + 10}" text-anchor="end">${short(c.end).toUpperCase()}</text>
+  </svg>`;
+}
+
+function renderProgress(view, c) {
+  const planned = plannedSessions(c);
+  const t = today();
+  const due = planned.filter(s => s.date <= t);
+  const done = planned.filter(s => isDone(c, s.date, s.slot));
+  const st = cycleStats(c);
+  // group into cycle weeks
+  const weeks = [];
+  planned.forEach(s => {
+    const w = Math.floor(diffDays(c.start, s.date) / 7);
+    (weeks[w] = weeks[w] || []).push(s);
+  });
+
+  view.innerHTML = `
+    <header class="topbar"><div class="wordmark">${MARK}PACE</div><span class="pill">${esc(c.name)}</span></header>
+    <h1 class="num" style="font-size:34px;letter-spacing:.02em">Progress</h1>
+
+    <section class="section">
+      <div class="stat-row">
+        <div class="card"><div class="label">Sessions</div><div class="num">${done.length}<span class="muted" style="font-size:18px"> / ${planned.length}</span></div><div class="small muted">계획 전체 기준</div></div>
+        <div class="card"><div class="label">Cycle</div><div class="num">${Math.round(st.frac * 100)}<span class="muted" style="font-size:18px">%</span></div><div class="small muted">${st.elapsed} / ${st.total}일</div></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2 class="eyebrow">Weeks</h2><span class="aside">지난 Session ${due.length}회 중 ${done.filter(s => s.date <= t).length}회</span></div>
+      <div class="card"><div class="weeks">
+        ${weeks.map((ss, i) => `<div class="wk ${st.week === i + 1 ? 'now' : ''}"><div class="dots">${ss.map(s => `<i class="${isDone(c, s.date, s.slot) ? 'on' : s.date > t ? 'future' : ''}"></i>`).join('')}</div><span>W${i + 1}</span></div>`).join('')}
+      </div></div>
+    </section>
+
+    ${c.goals.map(g => {
+      const ms = measurementsFor(g.id).slice().reverse();
+      return `<section class="section">
+        <div class="section-head"><h2 class="eyebrow">${esc(g.label)}</h2><button class="btn quiet" data-rec="${g.id}">+ 기록</button></div>
+        <div class="card chart">${chartSVG(c, g)}
+          <div class="entries">${ms.length ? ms.map(m => `<div class="entry"><span>${md(m.date)} <span class="muted small">${esc(m.note)}</span></span><span><span class="num">${fmtVal(m.value, g)}</span> <span class="muted small">${esc(g.unit)}</span><button class="icon-btn" data-del="${m.id}" aria-label="${md(m.date)} 기록 삭제">×</button></span></div>`).join('') : '<div class="empty">첫 기록을 남기면 변화가 선으로 그려져요.</div>'}</div>
+        </div>
+      </section>`;
+    }).join('')}
+    <div class="footer-tag">Progress at your pace.</div>`;
+
+  $$('[data-rec]', view).forEach(b => b.onclick = () => openRecord(c, b.dataset.rec));
+  $$('[data-del]', view).forEach(b => b.onclick = () => {
+    const m = db.measurements.find(x => x.id === b.dataset.del);
+    if (!m || !confirm(`${md(m.date)} 기록(${m.value})을 삭제할까요?`)) return;
+    db.measurements = db.measurements.filter(x => x.id !== m.id);
+    save(); render(); toast('기록을 삭제했어요');
+  });
+}
+
+/* ——— cycle page ——— */
+function renderCycle(view, c) {
+  const past = db.cycles.filter(x => x.status === 'complete').reverse();
+  const backupAge = db.lastBackup ? diffDays(db.lastBackup.slice(0, 10), today()) : null;
+  view.innerHTML = `
+    <header class="topbar"><div class="wordmark">${MARK}PACE</div><span class="pill">${esc(c.name)}</span></header>
+    <h1 class="num" style="font-size:34px;letter-spacing:.02em">Cycle</h1>
+
+    <section class="section">
+      <div class="section-head"><h2 class="eyebrow">Current</h2><button class="btn quiet" id="edit">수정</button></div>
+      <div class="card list">
+        <div class="list-row"><span>기간</span><span class="muted">${c.start.replaceAll('-', '.')} — ${c.end.replaceAll('-', '.')}</span></div>
+        ${c.goals.map(g => `<div class="list-row"><span>${esc(g.label)}</span><span class="muted num" style="font-size:16px">${fmtVal(g.start, g)} → ${fmtVal(g.target, g)} ${esc(g.unit)}</span></div>`).join('')}
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2 class="eyebrow">Plan · 매주</h2></div>
+      <div class="card list">
+        ${c.plan.slice().sort((a, b) => ((a.dow + 6) % 7) - ((b.dow + 6) % 7)).map(p => `<div class="list-row"><span>${DOW_KO[p.dow]}요일</span><span class="muted">${esc(p.label)}</span></div>`).join('') || '<div class="empty">요일별 Session이 없어요.</div>'}
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2 class="eyebrow">Backup</h2><span class="aside">${backupAge == null ? '아직 백업 안 함' : backupAge === 0 ? '오늘 백업함' : `${backupAge}일 전 백업`}</span></div>
+      <div class="card" style="padding:14px">
+        <p class="small muted" style="margin:0 0 12px">기록은 이 기기에만 저장돼요. 가끔 백업 파일을 파일 앱이나 iCloud Drive에 저장해 두세요.</p>
+        <div class="row-btns"><button class="btn ghost" id="export">백업 저장</button><button class="btn ghost" id="import">불러오기</button></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <button class="btn ghost block" id="complete">Cycle 마무리하기</button>
+      <p class="hint" style="margin:10px 0 0;text-align:center">기간 중이어도 마무리하고 다음 Cycle을 시작할 수 있어요.</p>
+    </section>
+
+    ${past.length ? `<section class="section"><div class="section-head"><h2 class="eyebrow">Past cycles</h2></div><div class="card list">
+      ${past.map(p => `<button class="list-row" data-past="${p.id}"><span>${esc(p.name)}</span><span class="muted">${short(p.start)} — ${short(p.end)} ›</span></button>`).join('')}
+    </div></section>` : ''}
+    <div class="footer-tag">One cycle at a time.</div>`;
+
+  $('#edit').onclick = () => { setupDraft = draftFrom(c); go('setup'); };
+  $('#export').onclick = exportBackup;
+  $('#import').onclick = importBackup;
+  $('#complete').onclick = () => go('complete');
+  $$('[data-past]', view).forEach(b => b.onclick = () => { completeView = b.dataset.past; go('complete'); });
+}
+
+/* ——— setup (create / edit cycle) ——— */
+let setupDraft = null;
+function draftFrom(c) { return JSON.parse(JSON.stringify({ id: c.id, name: c.name, start: c.start, end: c.end, plan: c.plan, goals: c.goals })); }
+function freshDraft() {
+  const prev = db.cycles.filter(c => c.status === 'complete').pop();
+  const start = today();
+  return {
+    id: null,
+    name: nextCycleName(),
+    start,
+    end: addDays(start, 12 * 7 - 1),
+    plan: prev ? prev.plan.map(p => ({ ...p })) : DEFAULT_PLAN.map(p => ({ ...p })),
+    goals: prev ? prev.goals.map(g => {
+      const cur = currentValue(g);
+      return { ...g, id: uid(), start: cur ?? g.start, startEstimated: cur == null && g.startEstimated };
+    }) : [],
+  };
+}
+const DURATIONS = [['4주', s => addDays(s, 27)], ['6주', s => addDays(s, 41)], ['12주', s => addDays(s, 83)], ['3개월', s => addMonths(s, 3)], ['6개월', s => addMonths(s, 6)], ['1년', s => addMonths(s, 12)]];
+
+function renderSetup(view) {
+  const d = setupDraft = setupDraft || freshDraft();
+  const editing = !!d.id;
+  const len = d.start && d.end && d.end >= d.start ? diffDays(d.start, d.end) + 1 : 0;
+  view.innerHTML = `
+    <header class="topbar"><div class="wordmark">${MARK}PACE</div>${activeCycle() ? '<button class="btn quiet" id="cancel">취소</button>' : ''}</header>
+    <div class="eyebrow">${editing ? 'Edit cycle' : 'Create a cycle'}</div>
+    <h1 class="num" style="font-size:34px;letter-spacing:.02em;margin-bottom:20px">${esc(d.name)}</h1>
+
+    <label class="field"><span class="label">Name</span><input class="input" id="s-name" value="${esc(d.name)}"></label>
+    <div class="two">
+      <label class="field"><span class="label">Start</span><input class="input" type="date" id="s-start" value="${d.start}"></label>
+      <label class="field"><span class="label">End</span><input class="input" type="date" id="s-end" value="${d.end}"></label>
+    </div>
+    <div class="chips" style="margin:-4px 0 8px">${DURATIONS.map(([l], i) => `<button class="chip" data-dur="${i}">${l}</button>`).join('')}</div>
+    <p class="hint" style="margin:4px 0 22px">${len ? `${len}일 · 약 ${Math.round(len / 7)}주` : '종료일을 시작일 이후로 정해 주세요'}</p>
+
+    <div class="section-head"><h2 class="eyebrow">Goals</h2></div>
+    <div id="s-goals">
+      ${d.goals.map((g, i) => `<div class="goal-block">
+        <div class="plan-row" style="grid-template-columns:1fr 64px 40px;margin:0">
+          <input class="input" data-gf="label" data-i="${i}" value="${esc(g.label)}" placeholder="목표 이름">
+          <input class="input" data-gf="unit" data-i="${i}" value="${esc(g.unit)}" placeholder="단위">
+          <button class="icon-btn" data-grm="${i}" aria-label="목표 삭제">×</button>
+        </div>
+        <div class="goal-row" style="grid-template-columns:1fr 1fr">
+          <label><span class="label">Start</span><input class="input num" data-gf="start" data-i="${i}" type="number" inputmode="decimal" step="any" value="${g.start ?? ''}"></label>
+          <label><span class="label">Goal</span><input class="input num" data-gf="target" data-i="${i}" type="number" inputmode="decimal" step="any" value="${g.target ?? ''}"></label>
+        </div>
+        <label class="small muted" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" data-gf="startEstimated" data-i="${i}" ${g.startEstimated ? 'checked' : ''}> 시작값은 추정치</label>
+      </div>`).join('')}
+    </div>
+    <div class="chips" style="margin-bottom:24px">${GOAL_PRESETS.map((p, i) => `<button class="chip" data-gadd="${i}">+ ${p.label || '직접 입력'}</button>`).join('')}</div>
+
+    <div class="section-head"><h2 class="eyebrow">Plan · 매주 Session</h2></div>
+    <div id="s-plan">
+      ${d.plan.map((p, i) => `<div class="plan-row">
+        <select class="input" data-pf="dow" data-i="${i}">${DOW_KO.map((k, j) => `<option value="${j}" ${p.dow === j ? 'selected' : ''}>${k}</option>`).join('')}</select>
+        <input class="input" data-pf="label" data-i="${i}" value="${esc(p.label)}" placeholder="예: Run">
+        <button class="icon-btn" data-prm="${i}" aria-label="Session 삭제">×</button>
+      </div>`).join('')}
+    </div>
+    <button class="btn quiet" id="p-add">+ Session 추가</button>
+
+    <div style="margin-top:28px"><button class="btn block" id="s-save">${editing ? '변경 저장' : 'Cycle 시작하기'}</button></div>`;
+
+  const sync = () => {
+    d.name = $('#s-name').value.trim() || d.name;
+    d.start = $('#s-start').value; d.end = $('#s-end').value;
+    $$('[data-gf]').forEach(el => {
+      const g = d.goals[+el.dataset.i], f = el.dataset.gf;
+      g[f] = f === 'startEstimated' ? el.checked : (f === 'start' || f === 'target') ? (el.value === '' ? null : parseFloat(el.value)) : el.value;
+    });
+    $$('[data-pf]').forEach(el => {
+      const p = d.plan[+el.dataset.i];
+      p[el.dataset.pf] = el.dataset.pf === 'dow' ? +el.value : el.value;
+    });
+  };
+  const rerender = () => { sync(); renderSetup(view); };
+  const cancel = $('#cancel'); if (cancel) cancel.onclick = () => { setupDraft = null; go('cycle'); };
+  $('#s-start').onchange = rerender; $('#s-end').onchange = rerender;
+  $$('[data-dur]').forEach(b => b.onclick = () => { sync(); if (d.start) d.end = DURATIONS[+b.dataset.dur][1](d.start); renderSetup(view); });
+  $$('[data-gadd]').forEach(b => b.onclick = () => { sync(); const p = GOAL_PRESETS[+b.dataset.gadd]; d.goals.push({ id: uid(), type: p.type, label: p.label, unit: p.unit, step: p.step, start: null, target: null, startEstimated: false }); renderSetup(view); });
+  $$('[data-grm]').forEach(b => b.onclick = () => { sync(); d.goals.splice(+b.dataset.grm, 1); renderSetup(view); });
+  $$('[data-prm]').forEach(b => b.onclick = () => { sync(); d.plan.splice(+b.dataset.prm, 1); renderSetup(view); });
+  $('#p-add').onclick = () => { sync(); d.plan.push({ dow: 1, label: '' }); renderSetup(view); };
+  $('#s-save').onclick = () => {
+    sync();
+    if (!d.start || !d.end || d.end < d.start) return toast('기간을 확인해 주세요');
+    const bad = d.goals.find(g => !g.label.trim() || g.start == null || g.target == null || !Number.isFinite(g.start) || !Number.isFinite(g.target));
+    if (bad) return toast('목표 이름·시작값·목표값을 모두 채워 주세요');
+    d.plan = d.plan.filter(p => p.label.trim());
+    if (editing) {
+      Object.assign(cycleById(d.id), { name: d.name, start: d.start, end: d.end, plan: d.plan, goals: d.goals });
+      toast('Cycle을 수정했어요');
+    } else {
+      db.cycles.push({ id: uid(), name: d.name, start: d.start, end: d.end, plan: d.plan, goals: d.goals, status: 'active', createdAt: Date.now() });
+      toast(`${d.name} 시작 — Your goal. Your pace.`);
+    }
+    save(); setupDraft = null; go('home');
+  };
+}
+
+/* ——— completion ——— */
+let completeView = null; // id of a past cycle to view, else the active one
+function renderComplete(view) {
+  const c = completeView ? cycleById(completeView) : activeCycle();
+  if (!c) { completeView = null; return go('home'); }
+  const reviewing = c.status === 'complete';
+  const planned = plannedSessions(c);
+  const done = planned.filter(s => isDone(c, s.date, s.slot)).length;
+  const st = cycleStats(c);
+  const days = diffDays(c.start, c.end) + 1;
+  view.innerHTML = `
+    <header class="topbar"><div class="wordmark">${MARK}PACE</div><button class="btn quiet" id="back">${reviewing ? '닫기' : '돌아가기'}</button></header>
+    <div class="complete-hero">
+      <div class="eyebrow">${esc(c.name)}${reviewing ? ' · complete' : ''}</div>
+      <h1>${reviewing ? 'CYCLE COMPLETE' : st.after ? 'CYCLE COMPLETE' : 'LOOK BACK'}</h1>
+      <div class="muted small" style="margin-top:6px">${short(c.start)} — ${short(c.end)} · ${days}일</div>
+    </div>
+    <section class="card" style="margin-top:22px;padding:4px 18px">
+      ${c.goals.map(g => {
+        const cur = currentValue(g);
+        return `<div class="change"><span class="label">${esc(g.label)}</span><span style="text-align:right"><span class="num">${fmtVal(g.start, g)} → <b>${fmtVal(cur, g)}</b> <span class="muted small">${esc(g.unit)}</span></span>
+          <span class="small muted" style="display:block">${cur == null ? '기록 없음' : `${fmtDelta(cur - g.start, g)} · 목표 ${fmtVal(g.target, g)}`}</span></span></div>`;
+      }).join('')}
+      <div class="change"><span class="label">Sessions</span><span class="num"><b>${done}</b> / ${planned.length}</span></div>
+    </section>
+    ${reviewing ? '' : `
+      <p class="next-q">Ready for your next pace?</p>
+      <button class="btn block" id="next">Create ${nextCycleName()}</button>
+      <p class="hint" style="margin-top:10px;text-align:center">지금 Cycle은 기록과 함께 보관되고, 마지막 기록값이 다음 Cycle의 시작값으로 이어져요.</p>`}`;
+  $('#back').onclick = () => { completeView = null; go(reviewing ? 'cycle' : 'home'); };
+  const next = $('#next');
+  if (next) next.onclick = () => {
+    c.status = 'complete'; c.completedAt = Date.now(); save();
+    setupDraft = freshDraft(); go('setup');
+  };
+}
+
+/* ——— backup ——— */
+async function exportBackup() {
+  db.lastBackup = new Date().toISOString();
+  save();
+  const name = `pace-backup-${today()}.json`;
+  const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+  const file = new File([blob], name, { type: 'application/json' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'PACE backup' });
+      render(); return toast('백업 파일을 저장했어요');
+    }
+  } catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  render(); toast('백업 파일을 저장했어요');
+}
+function importBackup() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'application/json,.json';
+  input.onchange = async () => {
+    const f = input.files[0]; if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      if (!Array.isArray(data.cycles) || !Array.isArray(data.measurements)) throw new Error('format');
+      if (db.cycles.length && !confirm('지금 기기의 기록을 백업 파일 내용으로 바꿀까요?')) return;
+      db = { version: 1, sessions: [], lastBackup: null, ...data };
+      save(); go('home'); toast('백업을 불러왔어요');
+    } catch (e) { toast('PACE 백업 파일이 아니에요'); }
+  };
+  input.click();
+}
+
+/* ——— boot ——— */
+render();
+document.addEventListener('visibilitychange', () => { if (!document.hidden && route !== 'setup') render(); });
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
