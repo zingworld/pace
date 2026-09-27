@@ -50,10 +50,14 @@ button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--lane); outline-offset: 2px; border-radius: 6px; }
 [hidden] { display: none !important; }
 
+/* app shell: the page itself never scrolls; .view scrolls and the tab bar sits below it.
+   Avoids iOS Safari misplacing position:fixed bars while its toolbar resizes. */
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
 .view {
-  max-width: 560px;
-  margin: 0 auto;
-  padding: calc(env(safe-area-inset-top) + 18px) var(--gutter) calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28px);
+  flex: 1 1 auto; min-height: 0; width: 100%;
+  overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;
+  padding: calc(env(safe-area-inset-top) + 18px) max(var(--gutter), calc((100% - 520px) / 2)) 28px;
   outline: none;
 }
 .view.no-tabs { padding-bottom: calc(env(safe-area-inset-bottom) + 32px); }
@@ -203,11 +207,10 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 
 /* tabbar */
 .tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  flex: none; position: relative; z-index: 10;
   display: flex; justify-content: center; gap: 4px;
   padding: 6px 12px calc(env(safe-area-inset-bottom) + 6px);
-  background: color-mix(in srgb, var(--mist) 86%, transparent);
-  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  background: var(--mist);
   border-top: 1px solid var(--rail);
 }
 .tab {
@@ -306,7 +309,7 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 .tab { max-width: 110px; }
 .empty-btn { width: 100%; border: 1.5px dashed var(--rail); background: none; display: flex; flex-direction: column; gap: 4px; align-items: center; font-size: 14px; }
 .empty-btn b { color: var(--lane); font-size: 15px; }
-.week-tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 calc(var(--gutter) * -1); padding: 0 var(--gutter) 2px; }
+.week-tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
 .week-tabs::-webkit-scrollbar { display: none; }
 .week-tabs .chip { flex: none; font-family: var(--display); font-size: 15px; letter-spacing: .06em; }
 .week-tabs .chip[aria-pressed="true"] .muted { color: var(--rail); }

@@ -114,19 +114,17 @@ const MARK = '<svg viewBox="0 0 26 16" aria-hidden="true"><rect x="1.2" y="1.2" 
 function openSheet(html, onMount) {
   $('#sheet-body').innerHTML = html;
   $('#sheet').hidden = false;
-  document.body.style.overflow = 'hidden';
   onMount && onMount($('#sheet-body'));
 }
 function closeSheet() {
   $('#sheet').hidden = true;
-  document.body.style.overflow = '';
 }
 $('#sheet').addEventListener('click', e => { if (e.target.closest('[data-close]')) closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#sheet').hidden) closeSheet(); });
 
 /* ——— router ——— */
 let route = 'home';
-function go(r) { route = r; render(); window.scrollTo(0, 0); }
+function go(r) { route = r; render(); $('#view').scrollTop = 0; }
 $$('.tab').forEach(b => b.addEventListener('click', () => go(b.dataset.route)));
 
 function render() {
