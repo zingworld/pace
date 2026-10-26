@@ -1,5 +1,5 @@
 /* PACE service worker — app shell offline, network first for pages */
-const VERSION = 'pace-20260927192253';
+const VERSION = 'pace-20261026220636';
 const SHELL = ['./', 'index.html', 'styles.css', 'program.js', 'app.js', 'manifest.webmanifest', 'icons/apple-touch-icon.png', 'icons/icon-192.png'];
 
 self.addEventListener('install', e => {

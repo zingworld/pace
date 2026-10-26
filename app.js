@@ -384,7 +384,7 @@ function renderPlan(view, c) {
           ${p.speeds.map(v => `<div class="sp"><i style="height:${Math.round(((v - lo) / (hi - lo)) * 100)}%"></i><span class="num">${v}</span></div>`).join('')}
         </div>
         <p class="plan-note">${esc(p.speedNote)}</p>
-        <div class="sub-head"><span class="label">코어 · 2라운드</span><span class="small muted">동작 사이 20–30초</span></div>
+        <div class="sub-head"><span class="label">${esc(p.coreLabel || '코어 · 2라운드')}</span><span class="small muted">동작 사이 20–30초</span></div>
         <div class="ex-list">${p.core.map(row).join('')}</div>
       ` : `
         <div class="sub-head"><span class="label">본 운동</span><span class="small muted">세트 × 횟수 · 준비 세트 제외</span></div>
@@ -400,11 +400,11 @@ function renderPlan(view, c) {
   view.innerHTML = `
     <header class="topbar"><div class="wordmark">${MARK}PACE</div><span class="pill">${esc(c.name)}</span></header>
     <h1 class="num" style="font-size:34px;letter-spacing:.02em">Plan</h1>
-    <p class="small muted" style="margin:2px 0 16px">${PROGRAM.name} · ${short(PROGRAM.start)} — ${short(PROGRAM.end)} · 화·수·목 약 50분</p>
+    <p class="small muted" style="margin:2px 0 16px">${w.block.name} · ${short(w.block.start)} — ${short(w.block.end)} · 화·수·목 약 50분</p>
 
     <div class="week-tabs" role="tablist">
       ${W.map(x => `<button class="chip" role="tab" data-pw="${x.n}" aria-pressed="${x.n === w.n}">W${x.n} <span class="muted">${x.set}</span></button>`).join('')}
-      <button class="chip" data-pw="later" aria-pressed="false">W5+</button>
+      <button class="chip" data-pw="later" aria-pressed="false">W${W.length + 1}+</button>
     </div>
     <div class="week-title"><span class="label">Week ${w.n} · ${w.set} 구성</span><span>${esc(w.title)}</span></div>
 
@@ -419,7 +419,7 @@ function renderPlan(view, c) {
     <div class="footer-tag">One cycle at a time.</div>`;
 
   $$('[data-pw]', view).forEach(b => b.onclick = () => {
-    if (b.dataset.pw === 'later') return toast('5주차부터는 첫 4주 기록을 보고 함께 정해요');
+    if (b.dataset.pw === 'later') return toast(`${W.length + 1}주차부터는 지금까지의 기록을 보고 함께 정해요`);
     planWeek = +b.dataset.pw; render();
   });
   $$('.plan-check', view).forEach(b => b.onclick = () => toggleSession(c, b.dataset.date, +b.dataset.slot));
@@ -463,7 +463,7 @@ function openLog(c, date) {
   const p = PROGRAM.byDate[date];
   if (!p) return;
   const prev = logFor(c, date);
-  const items = (p.kind === 'run' ? p.core.map(x => ({ name: x[0], dose: x[1], core: true })) : p.list.map(x => ({ name: x[0], dose: x[1], core: false })));
+  const items = (p.kind === 'run' ? p.core.map(x => ({ name: x[0], dose: x[1], core: !/머신|케이블|덤벨/.test(x[0]) })) : p.list.map(x => ({ name: x[0], dose: x[1], core: false })));
   const state = {
     run: p.kind === 'run' ? { min: prev?.run?.min ?? 30, km: prev?.run?.km ?? '' } : null,
     exercises: items.map(it => {
