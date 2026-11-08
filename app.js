@@ -377,6 +377,8 @@ function renderPlan(view, c) {
         <div><div class="label">${DOW[d.getDay()]} ${md(p.date)}${p.date === t ? ' · 오늘' : ''}</div><h3>${esc(label)}</h3></div>
         ${slot >= 0 ? `<button class="session plan-check ${done ? 'done' : ''}" data-date="${p.date}" data-slot="${slot}" aria-pressed="${done}" aria-label="${md(p.date)} Session 완료"><span class="check">${CHECK}</span></button>` : ''}
       </div>
+      ${logView(c, p.date)}
+      ${logFor(c, p.date) ? '<details class="plan-detail"><summary>계획 보기</summary>' : ''}
       <div class="timeline">${p.time.map(([a, b]) => `<div><span class="num">${a}</span>${esc(b)}</div>`).join('')}</div>
       ${p.kind === 'run' ? `
         <div class="sub-head"><span class="label">400m 달리기 속도</span><span class="small muted">사이 100m 걷기 6km/h</span></div>
@@ -392,7 +394,7 @@ function renderPlan(view, c) {
         <p class="plan-note"><b>무게</b> ${esc(p.load)}</p>
       `}
       ${p.note ? `<p class="plan-note">${esc(p.note)}</p>` : ''}
-      ${logSummary(c, p.date)}
+      ${logFor(c, p.date) ? '</details>' : ''}
       <button class="btn ${logFor(c, p.date) ? 'ghost' : ''} block" data-log="${p.date}" style="margin-top:14px">${logFor(c, p.date) ? '기록 수정' : '운동 기록하기'}</button>
     </article>`;
   };
@@ -410,12 +412,10 @@ function renderPlan(view, c) {
 
     <div class="stack">${w.days.map(dayCard).join('')}</div>
 
-    <section class="section">
-      <div class="section-head"><h2 class="eyebrow">Guide</h2></div>
-      <div class="card guides">
-        ${PROGRAM.guides.map(([title, items]) => `<details><summary>${esc(title)}</summary><ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></details>`).join('')}
-      </div>
-    </section>
+    <details class="card guides">
+      <summary class="guides-head"><span><span class="label">Guide</span> 러닝 방식 · 증량 · 휴식 · 통증</span></summary>
+      ${PROGRAM.guides.map(([title, items]) => `<details><summary>${esc(title)}</summary><ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></details>`).join('')}
+    </details>
     <div class="footer-tag">One cycle at a time.</div>`;
 
   $$('[data-pw]', view).forEach(b => b.onclick = () => {
@@ -447,16 +447,24 @@ function paceOf(min, km) {
   const sec = Math.round((min * 60) / km);
   return { pace: `${Math.floor(sec / 60)}:${pad(sec % 60)}`, kmh: (km / (min / 60)).toFixed(1) };
 }
-function logSummary(c, date) {
+function logView(c, date) {
   const l = logFor(c, date);
   if (!l) return '';
-  const lines = [];
-  if (l.run) {
-    const pc = paceOf(l.run.min, l.run.km);
-    lines.push(`<div><b>러닝</b> ${l.run.min}분 · ${l.run.km}km${pc ? ` · ${pc.pace}/km · ${pc.kmh}km/h` : ''}</div>`);
-  }
-  l.exercises.forEach(e => { const t = setsText(e); if (t) lines.push(`<div><b>${esc(e.name)}</b> ${esc(t)}${e.pain ? ' · 통증' : ''}</div>`); });
-  return `<div class="log-sum"><span class="label">기록</span>${lines.join('') || '<div>완료</div>'}</div>`;
+  const pc = l.run ? paceOf(l.run.min, l.run.km) : null;
+  const ex = l.exercises.filter(e => e.sets.length);
+  return `<div class="log-view">
+    <div class="label">오늘 한 운동</div>
+    ${l.run ? `<div class="lv-run"><div><b class="num">${l.run.min}</b><span>분</span></div><div><b class="num">${l.run.km}</b><span>km</span></div>${pc ? `<div><b class="num">${pc.pace}</b><span>/km</span></div>` : ''}</div>` : ''}
+    ${ex.map(e => `<div class="lv-ex">
+      <div class="lv-name">${esc(e.name)}${e.pain ? '<span class="lv-flag">통증</span>' : ''}${e.added ? '<span class="lv-flag add">추가</span>' : ''}</div>
+      <div class="lv-sets">${e.sets.map(st => {
+        const hasW = st.w !== '' && st.w != null, hasR = st.r !== '' && st.r != null;
+        const unit = e.unit === '초' ? '초' : '회';
+        return `<span class="num">${hasW ? `${st.w}<small>kg</small>` : ''}${hasW && hasR ? ' × ' : ''}${hasR ? `${st.r}${hasW ? '' : `<small>${unit}</small>`}` : ''}</span>`;
+      }).join('')}</div>
+    </div>`).join('')}
+    ${!l.run && !ex.length ? '<div class="small muted">완료</div>' : ''}
+  </div>`;
 }
 
 function openLog(c, date) {
@@ -464,20 +472,26 @@ function openLog(c, date) {
   if (!p) return;
   const prev = logFor(c, date);
   const items = (p.kind === 'run' ? p.core.map(x => ({ name: x[0], dose: x[1], core: !/머신|케이블|덤벨/.test(x[0]) })) : p.list.map(x => ({ name: x[0], dose: x[1], core: false })));
+  const lastWeight = name => { const last = lastExercise(name, date); return last ? [...last.sets].reverse().find(s => s.w !== '' && s.w != null)?.w ?? '' : ''; };
+  const fromPlan = it => {
+    const d = parseDose(it.dose);
+    return { name: it.name, plan: it.name, dose: it.dose, core: it.core, unit: d.unit, side: d.side, sets: Array.from({ length: d.sets }, () => ({ w: it.core ? '' : lastWeight(it.name), r: d.reps })), rir: '', pain: false };
+  };
+  const blank = () => ({ name: '', plan: null, dose: '', core: false, unit: '회', side: false, added: true, sets: Array.from({ length: 3 }, () => ({ w: '', r: '' })), rir: '', pain: false });
   const state = {
     run: p.kind === 'run' ? { min: prev?.run?.min ?? 30, km: prev?.run?.km ?? '' } : null,
-    exercises: items.map(it => {
-      const saved = prev?.exercises.find(e => e.name === it.name);
-      const d = parseDose(it.dose);
-      const last = lastExercise(it.name, date);
-      const lastW = last ? [...last.sets].reverse().find(s => s.w !== '')?.w ?? '' : '';
-      return {
-        name: it.name, dose: it.dose, core: it.core, unit: d.unit, side: d.side, last,
-        sets: saved ? saved.sets.map(s => ({ ...s })) : Array.from({ length: d.sets }, () => ({ w: it.core ? '' : lastW, r: d.reps })),
-        rir: saved?.rir ?? '', pain: saved?.pain ?? false,
-      };
-    }),
+    exercises: prev
+      ? prev.exercises.map(e => {
+          const it = items.find(x => x.name === (e.plan || e.name));
+          const d = it ? parseDose(it.dose) : { unit: e.unit || '회', side: false };
+          return { ...e, plan: it ? it.name : null, dose: it ? it.dose : '', core: !!e.core, unit: e.unit || d.unit, side: d.side, sets: e.sets.map(x => ({ ...x })), added: !it };
+        })
+      : items.map(fromPlan),
   };
+  const known = [...new Set([
+    ...Object.values(PROGRAM.byDate).flatMap(x => (x.list || x.core).map(e => e[0])),
+    ...db.logs.flatMap(l => l.exercises.map(e => e.name)),
+  ])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'ko'));
   const dd = parse(date);
   const html = () => `
     <h2 id="sheet-title">${DOW[dd.getDay()]} ${md(date)} · 운동 기록</h2>
@@ -491,10 +505,14 @@ function openLog(c, date) {
         <div class="pace-out" id="pace-out"></div>
         <p class="hint" style="margin:6px 0 0">걷기 포함 평균이에요. 30분 기록은 30 Min Run 목표에도 반영돼요.</p>
       </div>` : ''}
-    ${state.exercises.map((e, i) => `
-      <div class="log-block">
-        <div class="log-ex-head"><span class="ex-name">${esc(e.name)}</span><span class="small muted num">계획 ${esc(e.dose)}</span></div>
-        ${e.last ? `<div class="small muted">지난번 ${md(e.last.date)} · ${esc(setsText(e.last))}</div>` : ''}
+    <datalist id="ex-names">${known.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
+    ${state.exercises.map((e, i) => { const last = e.name ? lastExercise(e.name, date) : null; return `
+      <div class="log-block ${e.added ? 'is-added' : ''}">
+        <div class="log-ex-head">
+          <input class="log-name" data-e="${i}" data-f="name" value="${esc(e.name)}" list="ex-names" placeholder="운동 이름" aria-label="운동 이름">
+          <button class="icon-btn" data-xrm="${i}" aria-label="${esc(e.name || '운동')} 빼기">×</button>
+        </div>
+        <div class="log-meta small muted">${e.added ? '<span class="lv-flag add">추가</span>' : e.plan && e.name !== e.plan ? `<span class="lv-flag">대신</span> 계획: ${esc(e.plan)} ${esc(e.dose)}` : `계획 ${esc(e.dose)}`}${last ? ` · 지난번 ${md(last.date)} ${esc(setsText(last))}` : ''}</div>
         <div class="set-rows">
           ${e.sets.map((st, j) => `<div class="set-row ${e.core ? 'core' : ''}">
             <span class="set-n num">${j + 1}</span>
@@ -508,7 +526,9 @@ function openLog(c, date) {
           ${e.core ? '' : `<label class="small muted">여유 <select class="input mini" data-e="${i}" data-f="rir">${['', 0, 1, 2, 3, 4, '5+'].map(v => `<option value="${v}" ${String(e.rir) === String(v) ? 'selected' : ''}>${v === '' ? '—' : v + '회'}</option>`).join('')}</select></label>`}
           <label class="small muted pain"><input type="checkbox" data-e="${i}" data-f="pain" ${e.pain ? 'checked' : ''}> 통증</label>
         </div>
-      </div>`).join('')}
+      </div>`; }).join('')}
+    <button class="btn ghost block" id="x-add">+ 운동 추가</button>
+    <p class="hint" style="margin:8px 0 0">계획과 다르게 했다면 운동 이름을 바꾸고, 안 한 운동은 ×로 빼요.</p>
     <div class="row-btns" style="margin-top:16px"><button class="btn ghost" data-close>취소</button><button class="btn" id="log-save">저장</button></div>`;
 
   const sync = root => {
@@ -517,6 +537,7 @@ function openLog(c, date) {
       if (f === 'w' || f === 'r') e.sets[+el.dataset.s][f] = el.value === '' ? '' : parseFloat(el.value);
       else if (f === 'rir') e.rir = el.value;
       else if (f === 'pain') e.pain = el.checked;
+      else if (f === 'name') e.name = el.value.trim();
     });
     if (state.run) {
       state.run.min = parseFloat($('#run-min', root).value) || '';
@@ -536,6 +557,17 @@ function openLog(c, date) {
       sync(root); const e = state.exercises[+b.dataset.sadd]; const lastSet = e.sets[e.sets.length - 1] || { w: '', r: '' };
       e.sets.push({ ...lastSet }); root.innerHTML = html(); mount(root);
     });
+    const rerender = () => { root.innerHTML = html(); mount(root); };
+    $('#x-add', root).onclick = () => { sync(root); state.exercises.push(blank()); rerender(); const ins = $$('.log-name', root); ins[ins.length - 1].focus(); };
+    $$('[data-xrm]', root).forEach(b => b.onclick = () => { sync(root); state.exercises.splice(+b.dataset.xrm, 1); rerender(); });
+    // picking a name fills in the last weight used for it
+    $$('.log-name', root).forEach(el => el.onchange = () => {
+      sync(root);
+      const e = state.exercises[+el.dataset.e];
+      const w = e.core ? '' : lastWeight(e.name);
+      if (w !== '' && e.sets.every(x => x.w === '' || x.w == null)) e.sets.forEach(x => { x.w = w; });
+      rerender();
+    });
     $$('[data-srm]', root).forEach(b => b.onclick = () => {
       sync(root); const [i, j] = b.dataset.srm.split(':').map(Number); state.exercises[i].sets.splice(j, 1); root.innerHTML = html(); mount(root);
     });
@@ -544,7 +576,7 @@ function openLog(c, date) {
       const log = {
         id: prev?.id || uid(), cycleId: c.id, date, kind: p.kind, at: Date.now(),
         run: state.run && (state.run.min || state.run.km) ? { min: state.run.min, km: state.run.km } : null,
-        exercises: state.exercises.map(e => ({ name: e.name, core: e.core, unit: e.unit, sets: e.sets.filter(s => s.r !== '' || s.w !== ''), rir: e.rir, pain: e.pain })),
+        exercises: state.exercises.filter(e => e.name).map(e => ({ name: e.name, plan: e.plan || null, added: !!e.added, core: e.core, unit: e.unit, sets: e.sets.filter(s => s.r !== '' || s.w !== ''), rir: e.rir, pain: e.pain })),
       };
       db.logs = db.logs.filter(l => !(l.cycleId === c.id && l.date === date));
       db.logs.push(log);

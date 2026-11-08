@@ -334,21 +334,20 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 .sp { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 4px; }
 .sp i { display: block; width: 100%; min-height: 6px; border-radius: 6px 6px 3px 3px; background: var(--lane); max-height: calc(100% - 20px); }
 .sp span { font-size: 13px; font-weight: 600; }
-.guides { padding: 4px 18px; }
-.guides details + details { border-top: 1px solid var(--rail); }
-.guides summary { padding: 14px 0; font-weight: 600; cursor: pointer; list-style: none; display: flex; justify-content: space-between; }
+.guides { display: block; margin-top: 24px; padding: 0 16px; }
+.guides > summary.guides-head { padding: 12px 0; font-size: 13px; color: var(--muted); }
+.guides > summary.guides-head .label { margin-right: 6px; }
+.guides details { border-top: 1px solid var(--rail); }
+.guides summary { padding: 10px 0; font-weight: 600; font-size: 14px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .guides summary::-webkit-details-marker { display: none; }
 .guides summary::after { content: '+'; color: var(--muted); font-weight: 400; }
-.guides details[open] summary::after { content: '–'; }
-.guides ul { margin: 0 0 14px; padding-left: 18px; font-size: 14px; color: var(--muted); }
-.guides li + li { margin-top: 6px; }
+.guides details[open] > summary::after, .guides[open] > summary::after { content: '–'; }
+.guides ul { margin: 0 0 12px; padding-left: 16px; font-size: 13px; color: var(--muted); line-height: 1.55; }
+.guides li + li { margin-top: 4px; }
 
 /* ——— logging ——— */
 a.ex-name { color: inherit; text-decoration: none; display: inline-flex; gap: 4px; align-items: baseline; }
 a.ex-name span { font-size: 11px; color: var(--muted); }
-.log-sum { margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--lane-soft); font-size: 13px; }
-.log-sum .label { display: block; margin-bottom: 4px; color: var(--lane); }
-.log-sum b { font-weight: 600; margin-right: 4px; }
 .log-block { background: var(--card); border-radius: 14px; padding: 14px; margin-bottom: 10px; }
 .log-ex-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; }
 .set-rows { margin-top: 8px; }
@@ -371,3 +370,29 @@ a.ex-name span { font-size: 11px; color: var(--muted); }
 .weekly-go { flex: none; padding: 8px 16px; border-radius: 99px; background: var(--ink); color: var(--mist); font-weight: 700; font-size: 14px; }
 .run-entry { width: 100%; border: 0; background: none; text-align: left; display: grid; grid-template-columns: 50px 1fr auto; gap: 8px; }
 .run-entry:last-child { border-bottom: 0; }
+
+/* ——— record view (logged session) ——— */
+.log-view { margin-top: 14px; padding: 14px 16px 6px; border-radius: 14px; background: var(--lane-soft); }
+.log-view > .label { color: var(--lane); margin-bottom: 6px; }
+.lv-run { display: flex; gap: 18px; padding: 4px 0 10px; }
+.lv-run b { font-size: 30px; font-weight: 700; line-height: 1; }
+.lv-run span { font-size: 13px; color: var(--muted); margin-left: 3px; }
+.lv-ex { padding: 10px 0; border-top: 1px solid color-mix(in srgb, var(--lane) 18%, transparent); }
+.lv-name { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lv-sets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.lv-sets > span { background: var(--card); border-radius: 8px; padding: 4px 10px; font-size: 18px; font-weight: 600; }
+.lv-sets small { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 1px; }
+.lv-flag { font-family: var(--body); font-size: 11px; font-weight: 700; letter-spacing: 0; padding: 2px 7px; border-radius: 99px; background: var(--card); color: var(--muted); }
+.lv-flag.add { background: var(--sun); color: #fff; }
+.plan-detail { margin-top: 10px; }
+.plan-detail > summary { padding: 10px 0 2px; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; list-style: none; }
+.plan-detail > summary::-webkit-details-marker { display: none; }
+.plan-detail > summary::after { content: ' +'; }
+.plan-detail[open] > summary::after { content: ' –'; }
+
+/* ——— editable log sheet ——— */
+.log-ex-head { align-items: center; }
+.log-name { flex: 1; min-width: 0; border: 0; border-bottom: 1.5px solid var(--rail); background: none; padding: 4px 0; font-size: 17px; font-weight: 700; border-radius: 0; }
+.log-name:focus { outline: none; border-bottom-color: var(--lane); }
+.log-meta { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.log-block.is-added { box-shadow: inset 3px 0 0 var(--sun); }
