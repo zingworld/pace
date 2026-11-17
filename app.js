@@ -211,30 +211,31 @@ function heroCenter(c, st) {
   return `<div class="big">WEEK ${st.week}<small>/${st.weeks}</small></div><div class="sub">${Math.round(st.frac * 100)}% · ${st.total - st.elapsed}일 남음</div>`;
 }
 
-function goalCard(g) {
-  const cur = currentValue(g);
-  const shown = cur ?? g.start;
-  const p = goalProgress(g, cur);
-  const moved = cur == null ? null : cur - g.start;
-  return `
-    <article class="card goal">
-      <div class="goal-top">
-        <div>
-          <div class="label">${esc(g.label)}</div>
-          <div class="goal-range num">${fmtVal(g.start, g)} → <b>${fmtVal(g.target, g)}</b><span class="unit">${esc(g.unit)}</span></div>
-        </div>
-        <div class="goal-now">
-          <div class="v num">${fmtVal(shown, g)}<span class="unit">${esc(g.unit)}</span></div>
-          <div class="d">${cur == null ? '아직 기록 없음' : `시작 대비 ${fmtDelta(moved, g)}`}</div>
-        </div>
-      </div>
-      <div class="lane" aria-hidden="true">
-        <div class="rail"></div><div class="fill" style="width:${p * 100}%"></div>
-        <div class="end"></div><div class="dot" style="left:${p * 100}%"></div>
-      </div>
-      <div class="lane-legend"><span>Start ${fmtVal(g.start, g)}${g.startEstimated ? ' (추정)' : ''}</span><span>${Math.round(p * 100)}%</span><span>Goal ${fmtVal(g.target, g)}</span></div>
+// latest value for a goal; weight goals also read the weekly check
+function latestOf(g) {
+  const ms = measurementsFor(g.id);
+  let best = ms.length ? { date: ms[ms.length - 1].date, value: ms[ms.length - 1].value } : null;
+  if (g.type === 'weight' || g.unit === 'kg') {
+    const b = db.body.filter(x => x.weight != null).sort((a, z) => a.date.localeCompare(z.date)).pop();
+    if (b && (!best || b.date > best.date)) best = { date: b.date, value: b.weight };
+  }
+  return best;
+}
+// lower is better for body fat / weight; higher for distance
+const lowerBetter = g => g.target !== g.start ? g.target < g.start : g.type !== 'run_30min';
+function goalRow(g) {
+  const last = latestOf(g);
+  let status = '아직 기록 없음', bad = false;
+  if (last) {
+    const d = last.value - g.target;
+    bad = lowerBetter(g) ? d > 1e-9 : d < -1e-9;
+    status = `최근 ${fmtVal(last.value, g)}${g.unit === '%' ? '%' : ' ' + g.unit} (${md(last.date)}) · 목표 대비 ${fmtDelta(d, g)}`;
+  }
+  return `<div class="gl-row">
+      <div class="goal-line"><span class="label">${esc(g.label)}</span><span class="goal-target num">${fmtVal(g.target, g)}<span class="unit">${esc(g.unit)}</span></span></div>
+      <div class="goal-status ${bad ? 'bad' : ''}">${esc(status)}</div>
       <button class="goal-add" data-goal="${g.id}" aria-label="${esc(g.label)} 기록하기"></button>
-    </article>`;
+    </div>`;
 }
 
 function renderHome(view, c) {
@@ -268,13 +269,6 @@ function renderHome(view, c) {
 
     ${st.after ? `<button class="btn block" id="finish" style="margin-bottom:8px">Cycle 돌아보기</button>` : ''}
 
-    ${weeklyCheckCard()}
-
-    <section class="section">
-      <div class="section-head"><h2 class="eyebrow">Goals</h2><span class="aside">카드를 눌러 기록</span></div>
-      <div class="stack">${c.goals.map(goalCard).join('') || '<button class="card empty empty-btn" id="add-goal">아직 목표가 없어요<b>+ 목표 추가하기</b></button>'}</div>
-    </section>
-
     <section class="section">
       <div class="section-head"><h2 class="eyebrow">${st.before ? 'First week' : nextWeek ? 'Next week' : 'This week'}</h2><span class="aside">${week.length ? `${doneCount} / ${week.length} sessions` : ''}</span></div>
       <div class="card sessions">
@@ -288,7 +282,14 @@ function renderHome(view, c) {
           </button>`;
         }).join('') || '<div class="empty">이번 주에는 계획된 Session이 없어요.</div>'}
       </div>
-      <button class="btn quiet" id="to-plan" style="margin-top:6px">${week.some(s => PROGRAM.byDate[s.date]) ? '운동 내용 보기 ›' : 'Plan 보기 ›'}</button>
+      <button class="btn quiet" id="to-plan" style="margin-top:6px">${PROGRAM.byDate[t] ? '오늘 운동 보기 ›' : week.some(s => PROGRAM.byDate[s.date]) ? '운동 내용 보기 ›' : 'Plan 보기 ›'}</button>
+    </section>
+
+    ${weeklyCheckCard()}
+
+    <section class="section">
+      <div class="section-head"><h2 class="eyebrow">Goals</h2><span class="aside">눌러서 기록</span></div>
+      ${c.goals.length ? `<div class="card goal-list">${c.goals.map(goalRow).join('')}</div>` : '<button class="card empty empty-btn" id="add-goal">아직 목표가 없어요<b>+ 목표 추가하기</b></button>'}
     </section>
 
     <div class="footer-tag">Your goal. Your pace.</div>`;
@@ -298,7 +299,7 @@ function renderHome(view, c) {
   $$('.goal-add', view).forEach(b => b.onclick = () => openRecord(c, b.dataset.goal));
   const f = $('#finish'); if (f) f.onclick = () => go('complete');
   const ag = $('#add-goal'); if (ag) ag.onclick = () => { setupDraft = draftFrom(c); go('setup'); };
-  $('#to-plan').onclick = () => { planWeek = null; go('plan'); };
+  $('#to-plan').onclick = () => { planWeek = null; planFocus = t; go('plan'); };
   const wc = $('#weekly'); if (wc) wc.onclick = () => openBody(c);
 }
 
@@ -345,7 +346,7 @@ function openRecord(c, goalId) {
 function planSummary(date) {
   const p = PROGRAM.byDate[date];
   if (!p) return '';
-  if (p.kind === 'run') return `400m × ${p.speeds.length} · ${Math.min(...p.speeds)}–${Math.max(...p.speeds)} km/h`;
+  if (p.kind === 'run') return `30분 약 ${p.km.toFixed(1)} km 목표 · ${Math.min(...p.speeds)}–${Math.max(...p.speeds)} km/h`;
   return `${p.list[0][0]} 외 ${p.list.length - 1}`;
 }
 // which slot of the active cycle's weekly plan this date belongs to
@@ -355,7 +356,7 @@ function slotFor(c, date) {
   return c.plan.findIndex(p => p.dow === dow);
 }
 
-let planWeek = null;
+let planWeek = null, planFocus = null;
 function renderPlan(view, c) {
   const t = today();
   const W = PROGRAM.weeks;
@@ -381,8 +382,9 @@ function renderPlan(view, c) {
       ${logFor(c, p.date) ? '<details class="plan-detail"><summary>계획 보기</summary>' : ''}
       <div class="timeline">${p.time.map(([a, b]) => `<div><span class="num">${a}</span>${esc(b)}</div>`).join('')}</div>
       ${p.kind === 'run' ? `
-        <div class="sub-head"><span class="label">400m 달리기 속도</span><span class="small muted">사이 100m 걷기 6km/h</span></div>
-        <div class="speeds" role="img" aria-label="속도 ${p.speeds.join(', ')} km/h">
+        <div class="est"><span class="label">이대로 하면 30분</span><span class="est-km num">약 ${p.km.toFixed(2)}<span class="unit">km</span></span></div>
+        <div class="sub-head"><span class="label">400m 달리기 속도</span><span class="small muted">사이 100m 걷기 ${p.walk}km/h</span></div>
+        <div class="speeds" style="grid-template-columns:repeat(${p.speeds.length},1fr)" role="img" aria-label="속도 ${p.speeds.join(', ')} km/h">
           ${p.speeds.map(v => `<div class="sp"><i style="height:${Math.round(((v - lo) / (hi - lo)) * 100)}%"></i><span class="num">${v}</span></div>`).join('')}
         </div>
         <p class="plan-note">${esc(p.speedNote)}</p>
@@ -418,6 +420,8 @@ function renderPlan(view, c) {
     </details>
     <div class="footer-tag">One cycle at a time.</div>`;
 
+  const focus = planFocus && $(`[data-log="${planFocus}"]`, view); planFocus = null;
+  if (focus) requestAnimationFrame(() => { const card = focus.closest('.day-card'); $('#view').scrollTop += card.getBoundingClientRect().top - 12; });
   const tabs = $('.week-tabs', view), on = $('[aria-pressed="true"]', tabs);
   if (on) tabs.scrollLeft += on.getBoundingClientRect().left - tabs.getBoundingClientRect().left - (tabs.clientWidth - on.offsetWidth) / 2;
   $$('[data-pw]', view).forEach(b => b.onclick = () => {
@@ -627,7 +631,7 @@ function openBody(c) {
       <label class="field"><span class="label">Body fat (%)</span><input class="input big" id="bf" type="number" inputmode="decimal" step="any" placeholder="${last?.bodyFat ?? ''}"></label>
     </div>
     <label class="field"><span class="label">Date</span><input class="input" id="bd" type="date" value="${today()}"></label>
-    <p class="hint" style="margin-top:0">매주 같은 조건(예: 목요일 아침 기상 후, 화장실 다녀온 뒤)에서 재면 추이를 보기 좋아요. 체지방률은 Body Fat 목표에도 반영돼요.</p>
+    <p class="hint" style="margin-top:0">매주 같은 조건(예: 목요일 아침 기상 후, 화장실 다녀온 뒤)에서 재면 추이를 보기 좋아요. 체지방률·몸무게는 같은 종류의 목표에도 반영돼요.</p>
     <div class="row-btns"><button class="btn ghost" data-close>취소</button><button class="btn" id="b-save">저장</button></div>`;
   openSheet(html, root => {
     setTimeout(() => $('#bw', root).focus(), 250);
@@ -638,6 +642,8 @@ function openBody(c) {
       db.body.push(e);
       const g = c.goals.find(x => x.type === 'body_fat') || c.goals.find(x => x.unit === '%');
       if (g && e.bodyFat != null) db.measurements.push({ id: uid(), cycleId: c.id, goalId: g.id, date, value: e.bodyFat, note: 'Weekly check', bodyId: e.id, at: Date.now() });
+      const gw = c.goals.find(x => x.type === 'weight') || c.goals.find(x => x.unit === 'kg');
+      if (gw && e.weight != null) db.measurements.push({ id: uid(), cycleId: c.id, goalId: gw.id, date, value: e.weight, note: 'Weekly check', bodyId: e.id, at: Date.now() });
       save(); closeSheet(); render();
       toast('이번 주 체크를 저장했어요');
     };

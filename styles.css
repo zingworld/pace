@@ -139,6 +139,14 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 .lane .fill { position: absolute; left: 0; top: 9px; height: 4px; background: var(--lane); border-radius: 4px; transition: width .8s cubic-bezier(.2,.7,.2,1); }
 .lane .dot { position: absolute; top: 4px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 0 4px var(--card); transition: left .8s cubic-bezier(.2,.7,.2,1); }
 .lane .end { position: absolute; right: -2px; top: 3px; width: 2px; height: 16px; background: var(--ink); }
+.goal-list { padding: 4px 18px; }
+.gl-row { position: relative; padding: 14px 0; }
+.gl-row + .gl-row { border-top: 1px solid var(--rail); }
+.goal-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.goal-target { font-family: var(--display); font-weight: 700; font-size: 34px; line-height: 1; }
+.goal-target .unit { font-size: 16px; color: var(--muted); font-weight: 600; margin-left: 2px; }
+.goal-status { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.goal-status.bad { color: var(--danger); font-weight: 600; }
 .lane-legend { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
 .goal-add {
   position: absolute; inset: 0; border: 0; background: none; border-radius: var(--r);
@@ -330,6 +338,9 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 .ex-dose { font-size: 19px; font-weight: 700; white-space: nowrap; }
 .plan-note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
 .plan-note b { color: var(--ink); margin-right: 4px; }
+.est { display: flex; justify-content: space-between; align-items: baseline; margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--lane-soft); }
+.est-km { font-family: var(--display); font-weight: 700; font-size: 30px; line-height: 1; color: var(--lane); }
+.est-km .unit { font-size: 15px; margin-left: 2px; color: var(--muted); font-weight: 600; }
 .speeds { display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; align-items: end; height: 96px; padding-top: 4px; }
 .sp { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 4px; }
 .sp i { display: block; width: 100%; min-height: 6px; border-radius: 6px 6px 3px 3px; background: var(--lane); max-height: calc(100% - 20px); }
