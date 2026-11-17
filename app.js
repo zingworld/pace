@@ -418,8 +418,10 @@ function renderPlan(view, c) {
     </details>
     <div class="footer-tag">One cycle at a time.</div>`;
 
+  const tabs = $('.week-tabs', view), on = $('[aria-pressed="true"]', tabs);
+  if (on) tabs.scrollLeft += on.getBoundingClientRect().left - tabs.getBoundingClientRect().left - (tabs.clientWidth - on.offsetWidth) / 2;
   $$('[data-pw]', view).forEach(b => b.onclick = () => {
-    if (b.dataset.pw === 'later') return toast(`${W.length + 1}주차부터는 지금까지의 기록을 보고 함께 정해요`);
+    if (b.dataset.pw === 'later') return toast(`${W.length + 1}주차부터는 이번 Cycle 기록을 보고 다음 Cycle에서 함께 정해요`);
     planWeek = +b.dataset.pw; render();
   });
   $$('.plan-check', view).forEach(b => b.onclick = () => toggleSession(c, b.dataset.date, +b.dataset.slot));
